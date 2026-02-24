@@ -1,49 +1,44 @@
 import requests
+import re
 import csv
 import os
-import time
 from datetime import datetime
 
-# 这个接口是蔚来加电地图的“生命线”，直接返回纯数字数据
-# 2026年最新接口地址
-API_URL = "https://chargermap.nio.com/pe/h5/static/chargermap?channel=official"
+# 目标：蔚来官网充电地图主页
+URL = "https://www.nio.cn/charger-map"
 
 def get_nio_data():
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-        "Host": "chargermap.nio.com",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://www.nio.cn",
-        "Referer": "https://www.nio.cn/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
     }
     
     try:
-        # 发送请求
-        response = requests.get(API_URL, headers=headers, timeout=20)
+        # 1. 获取网页原文
+        response = requests.get(URL, headers=headers, timeout=30)
+        response.encoding = 'utf-8'
+        html_content = response.text
         
-        # 调试信息：如果运行失败，可以在 Actions 日志里看到返回的状态码
-        print(f"DEBUG: 状态码 {response.status_code}")
-        
-        data = response.json()
-        
-        # 关键步骤：从蔚来的 JSON 字典里提取你想要的字段
-        # 根据2026年最新结构，数据在 data 层级下
-        stats = data.get('data', {})
-        
-        # 提取字段（这些是蔚来后台的原始英文名，分别对应你的中文项目）
-        # swap_count -> 实时累计换电次数
-        # power_swap_station_num -> 蔚来能源换电站
-        # highway_swap_station_num -> 高速公路换电站
-        swap_count = stats.get('swap_count', 0)
-        total_stations = stats.get('power_swap_station_num', 0)
-        highway_stations = stats.get('highway_swap_station_num', 0)
+        # 2. 定义搜索函数 (直接寻找中文标签后面的数字)
+        def search_number(label):
+            # 这个正则会寻找： 标签名字，后面跟着任意字符，直到遇到一串数字
+            # 兼容 73,123,456 这种带逗号的格式
+            pattern = f"{label}.*?([\d,]+)"
+            match = re.search(pattern, html_content)
+            if match:
+                num_str = match.group(1).replace(',', '')
+                return num_str
+            return "N/A"
 
-        # 如果抓到的数字是 0，说明这个 API 链接失效了，我们需要尝试备选方案
-        if swap_count == 0:
-            print("⚠️ 警告：API 返回数据为空，正在尝试备选正则匹配...")
-            return None
+        # 3. 抓取你要求的三个数据
+        swap_count = search_number("实时累计换电次数")
+        total_stations = search_number("蔚来能源换电站")
+        highway_stations = search_number("高速公路换电站")
 
-        # 格式化时间
+        # 获取时间
         now = datetime.now()
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -52,13 +47,12 @@ def get_nio_data():
         return [timestamp, weekday_cn, swap_count, total_stations, highway_stations]
 
     except Exception as e:
-        print(f"❌ 运行发生致命错误: {e}")
+        print(f"❌ 抓取异常: {e}")
         return None
 
 def save_to_csv(row):
     file_path = 'nio_swaps.csv'
     file_exists = os.path.isfile(file_path)
-    # utf-8-sig 是为了让 Excel 打开不乱码
     with open(file_path, 'a', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         if not file_exists:
@@ -69,6 +63,9 @@ if __name__ == "__main__":
     result = get_nio_data()
     if result:
         save_to_csv(result)
-        print(f"✅ 数据记录成功！当前换电总数: {result[2]}")
+        print(f"✅ 抓取成功: {result}")
     else:
-        print("❌ 本次抓取失败，请检查 API 是否可用。")
+        # 如果失败，存入一条错误记录，确保 Git 有内容可以提交
+        error_row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "-", "抓取失败", "-", "-"]
+        save_to_csv(error_row)
+        print("❌ 抓取失败，已记录错误日志")
