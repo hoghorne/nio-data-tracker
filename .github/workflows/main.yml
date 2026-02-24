@@ -1,0 +1,32 @@
+name: NIO Data Sync
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # 每10分钟执行一次 (GitHub最短间隔通常为5-10分钟)
+  workflow_dispatch: # 允许你手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 安装 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 运行爬虫记录数据
+        run: python tracker.py
+
+      - name: 提交并推送到仓库
+        run: |
+          git config --global user.email "bot@github.com"
+          git config --global user.name "NIO-Data-Bot"
+          git add nio_swaps.csv
+          git commit -m "Auto-update NIO data: $(date)"
+          git push
