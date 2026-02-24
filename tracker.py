@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from playwright.sync_api import sync_playwright
 
-URL = "https://www.nio.cn/charger-map"
+URL = "https://chargermap.nio.com/pe/h5/static/chargermap?channel=official"
 
 def get_nio_data():
     results = []
