@@ -4,12 +4,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from playwright.sync_api import sync_playwright
 
-# 目标地址
+# 蔚来换电地图 H5 接口地址
 URL = "https://chargermap.nio.com/pe/h5/static/chargermap?channel=official"
 
 def get_nio_data():
     results = []
     with sync_playwright() as p:
+        # 启动浏览器
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -18,36 +19,48 @@ def get_nio_data():
         page = context.new_page()
         
         try:
-            print(f"正在访问: {URL}")
+            print(f"正在访问北京时间 2026 数据源: {URL}")
+            # 只要 HTML 骨架加载完成即开始执行，提高响应速度
             page.goto(URL, wait_until="domcontentloaded", timeout=60000)
             
-            # 等待核心容器加载
-            print("等待数据组件加载...")
+            print("等待数字组件渲染...")
+            # 确保数字翻转组件已出现在页面上
             page.wait_for_selector(".pe-biz-digit-flip", timeout=30000)
-            time.sleep(3)
+            # 额外等待以确保 JS 动画完成初始赋值
+            time.sleep(5)
 
             def capture_current_frame():
+                # 校准北京时间 (UTC+8)
                 beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
                 
-                # 针对不同结构的两套提取逻辑
                 def extract_val(label_text):
-                    # --- 逻辑 1: 针对“实时累计换电次数” (li > span 结构) ---
-                    flip_selector = f"h6:has-text('{label_text}') + div .pe-biz-digit-flip li span"
-                    elements = page.query_selector_all(flip_selector)
-                    if elements:
-                        return "".join([el.inner_text() for el in elements if el.inner_text().strip().isdigit()])
+                    # --- 针对“换电次数”的多位滚动结构处理 ---
+                    container_selector = f"h6:has-text('{label_text}') + div ul.pe-biz-digit-flip"
+                    container = page.query_selector(container_selector)
                     
-                    # --- 逻辑 2: 针对“换电站数量” (strong 标签结构) ---
-                    # 寻找包含标题的 h6 旁边的 strong 标签
+                    if container:
+                        # 找到代表每一位数字的 li 容器
+                        digits_li = container.query_selector_all("li")
+                        final_num_str = ""
+                        for li in digits_li:
+                            # 蔚来该组件在跳变时，li 下会存在多个 span。
+                            # 目标数字通常是该槽位中最后插入或最末尾的 span
+                            spans = li.query_selector_all("span")
+                            valid_digits = [s.inner_text().strip() for s in spans if s.inner_text().strip().isdigit()]
+                            if valid_digits:
+                                # 只取当前槽位中确定的最后一个数字字符
+                                final_num_str += valid_digits[-1]
+                        return final_num_str
+
+                    # --- 针对“换电站数量”的静态结构处理 ---
                     strong_selector = f"h6:has-text('{label_text}') + strong"
                     strong_element = page.query_selector(strong_selector)
                     if strong_element:
-                        # 提取文本并去掉逗号
                         return strong_element.inner_text().replace(',', '').strip()
                     
                     return "0"
 
-                # 注意：截图显示标题是“其中高速公路换电站”，所以我们要用全名
+                # 提取三个核心维度
                 swap_count = extract_val("实时累计换电次数")
                 total_stations = extract_val("蔚来能源换电站")
                 highway_stations = extract_val("其中高速公路换电站")
@@ -61,18 +74,24 @@ def get_nio_data():
                     highway_stations
                 ]
 
-            print("开始高频采集...")
+            print("执行高频校验采集...")
             for i in range(5):
                 frame_data = capture_current_frame()
-                if frame_data[2] != "0":
+                num_str = frame_data[2]
+                
+                # --- 优化的长度校验逻辑 ---
+                # 允许从 9 位（亿级）跳转到 10 位或 11 位（十亿/百亿级）
+                # 但拒绝由于抓取重复导致的 12 位及以上数据
+                if num_str and 8 < len(num_str) < 12:
                     results.append(frame_data)
-                    print(f"采集成功 [{i+1}/5]: 换电{frame_data[2]}, 总站{frame_data[3]}, 高速{frame_data[4]}")
+                    print(f"成功记录 [{i+1}/5]: {num_str}")
                 else:
-                    print(f"采集提示 [{i+1}/5]: 数据尚未就绪...")
+                    print(f"检测到异常数据长度 ({len(num_str) if num_str else 0}), 自动丢弃: {num_str}")
+                
                 time.sleep(2)
 
         except Exception as e:
-            print(f"❌ 运行错误: {e}")
+            print(f"❌ 运行异常: {e}")
         finally:
             browser.close()
             
@@ -80,10 +99,11 @@ def get_nio_data():
 
 def save_to_csv(rows):
     if not rows:
-        print("⚠️ 未采集到有效数据。")
+        print("⚠️ 未能采集到符合质量标准的数据。")
         return
     file_path = 'nio_swaps.csv'
     file_exists = os.path.isfile(file_path)
+    # 使用 utf-8-sig 确保 Excel 直接打开中文不乱码
     with open(file_path, 'a', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         if not file_exists:
@@ -93,4 +113,4 @@ def save_to_csv(rows):
 if __name__ == "__main__":
     captured_data = get_nio_data()
     save_to_csv(captured_data)
-    print(f"✅ 脚本结束。")
+    print(f"✅ 任务流程结束。")
