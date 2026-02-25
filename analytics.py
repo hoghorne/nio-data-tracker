@@ -1,5 +1,7 @@
 import pandas as pd
 import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 import os
 from datetime import datetime, timedelta
 
@@ -23,13 +25,9 @@ def run_analysis():
         '换电站': '总站数',       
         '高速换电站': '高速站数'    
     }
-    
     for old_name, new_name in mapping.items():
         if old_name in df.columns:
             df.rename(columns={old_name: new_name}, inplace=True)
-
-    if '时间' not in df.columns or '次数' not in df.columns:
-        return
 
     # 数据预处理
     df['时间'] = pd.to_datetime(df['时间'])
@@ -37,12 +35,16 @@ def run_analysis():
     df['次数'] = pd.to_numeric(df['次数'], errors='coerce')
     df = df.dropna(subset=['次数'])
     
-    latest = df.iloc[-1]
-    first = df.iloc[0]
-
-    # --- 逻辑计算 ---
+    # --- 计算核心指标 ---
     
-    # 1. 计算最近 1 小时速率
+    # 1. 计算每条记录相对于上一条的“实时日频率” (即：增长量 / 时间差 * 24小时)
+    # 这样每一行数据都会有一个当下的“日速率”
+    df['diff_time'] = df['时间'].diff().dt.total_seconds() / 3600  # 小时差
+    df['diff_count'] = df['次数'].diff()
+    df['daily_rate'] = (df['diff_count'] / df['diff_time']) * 24
+    
+    # 2. 最近 1 小时的实时频率 (每小时)
+    latest = df.iloc[-1]
     one_hour_ago = latest['时间'] - timedelta(hours=1)
     df_1h = df[df['时间'] >= one_hour_ago]
     if len(df_1h) > 1:
@@ -52,28 +54,25 @@ def run_analysis():
     else:
         speed_hour = 0
 
-    # 2. 计算平均每天换电次数 (日均增长)
-    # 取全部记录的时间跨度
-    total_days = (latest['时间'] - first['时间']).total_seconds() / 86400
-    total_swaps = latest['次数'] - first['次数']
+    # 3. 实时换电频率 (每天) - 取最近几个数据点的平滑值，防止抖动太剧烈
+    speed_day = df['daily_rate'].iloc[-5:].mean() if len(df) > 5 else 0
+
+    # --- 绘图 ---
+    theme_color = "#00A3E0"
     
-    # 如果数据记录不足 1 小时，显示 0；否则按比例换算成日增长
-    if total_days > 0.04: # 约 1 小时以上
-        speed_day = total_swaps / total_days
-    else:
-        speed_day = 0
+    # 图 1: 累计次数趋势
+    fig1 = px.line(df, x='时间', y='次数', template='plotly_dark', title="累计换电次数")
+    fig1.update_traces(line_color=theme_color, fill='tozeroy')
+    fig1.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=30,b=0))
 
-    # 3. 绘图
-    theme_color = "#00A3E0" # 蔚来蓝
-    fig = px.line(df, x='时间', y='次数', template='plotly_dark')
-    fig.update_traces(line_color=theme_color, fill='tozeroy')
-    fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', 
-        plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=10, r=10, t=10, b=10)
-    )
+    # 图 2: 实时日频率趋势
+    # 排除掉掉初始的 NaN 和异常值
+    df_plot_rate = df.dropna(subset=['daily_rate']).iloc[1:] 
+    fig2 = px.line(df_plot_rate, x='时间', y='daily_rate', template='plotly_dark', title="实时换电频率趋势 (次/天)")
+    fig2.update_traces(line_color="#2ecc71") # 绿色线条代表速率
+    fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=30,b=0))
 
-    # 4. 构建 HTML (包含你的文字修改需求)
+    # --- HTML 构建 ---
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -81,14 +80,14 @@ def run_analysis():
         <meta charset="UTF-8">
         <title>NIO Battery Swap Tracker</title>
         <style>
-            body {{ background: #0b0e14; color: white; font-family: -apple-system, sans-serif; padding: 20px; }}
-            .card {{ background: #1a1f28; padding: 25px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 900px; margin: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }}
-            .header-title {{ font-size: 28px; font-weight: bold; margin-bottom: 20px; color: white; }}
+            body {{ background: #0b0e14; color: white; font-family: sans-serif; padding: 20px; }}
+            .card {{ background: #1a1f28; padding: 25px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 1000px; margin: auto; }}
+            .header-title {{ font-size: 28px; font-weight: bold; margin-bottom: 20px; }}
             .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }}
             .stat-box {{ background: #252b36; padding: 15px; border-radius: 10px; }}
             .label {{ color: #888; font-size: 14px; }}
             .value {{ font-size: 24px; color: {theme_color}; font-weight: bold; margin-top: 5px; }}
-            .small-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 20px; border-top: 1px solid #333; padding-top: 20px; }}
+            .chart-container {{ margin-top: 20px; display: grid; grid-template-columns: 1fr; gap: 20px; }}
         </style>
     </head>
     <body>
@@ -101,7 +100,7 @@ def run_analysis():
                     <div class="value">{speed_hour:.1f} <span style="font-size:12px">次/h</span></div>
                 </div>
                 <div class="stat-box">
-                    <div class="label">平均换电增长 (每天)</div>
+                    <div class="label">实时换电频率 (每天)</div>
                     <div class="value">{int(speed_day):,} <span style="font-size:12px">次/day</span></div>
                 </div>
             </div>
@@ -111,21 +110,13 @@ def run_analysis():
                 <div class="value" style="font-size: 40px;">{int(latest['次数']):,}</div>
             </div>
 
-            {fig.to_html(full_html=False, include_plotlyjs='cdn')}
+            <div class="chart-container">
+                <div>{fig1.to_html(full_html=False, include_plotlyjs='cdn')}</div>
+                <div>{fig2.to_html(full_html=False, include_plotlyjs='cdn')}</div>
+            </div>
 
-            <div class="small-grid">
-                <div>
-                    <div class="label">换电站总数</div>
-                    <div style="font-size:18px">{latest.get('总站数', 'N/A')}</div>
-                </div>
-                <div>
-                    <div class="label">高速换电站</div>
-                    <div style="font-size:18px">{latest.get('高速站数', 'N/A')}</div>
-                </div>
-                <div>
-                    <div class="label">更新时间</div>
-                    <div style="font-size:12px; color:#666;">{latest['时间'].strftime('%m-%d %H:%M')}</div>
-                </div>
+            <div style="margin-top:20px; color:#444; font-size:12px; text-align:center;">
+                Last Update: {latest['时间'].strftime('%Y-%m-%d %H:%M:%S')} | Data points: {len(df)}
             </div>
         </div>
     </body>
@@ -134,7 +125,7 @@ def run_analysis():
 
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
-    print("Success: Updated dashboard generated.")
+    print("Success: Updated dashboard with dual charts generated.")
 
 if __name__ == "__main__":
     run_analysis()
