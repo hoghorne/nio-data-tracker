@@ -1,0 +1,31 @@
+name: Data Analytics and Visual
+
+on:
+  push:
+    paths:
+      - 'nio_swaps.csv'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: pip install pandas plotly
+      
+    - name: Run Analytics
+      run: python analytics.py
+      
+    - name: Commit and Push
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add index.html
+        git commit -m "Update dashboard: $(date)" || exit 0
+        git push
