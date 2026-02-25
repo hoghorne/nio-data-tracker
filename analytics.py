@@ -52,15 +52,22 @@ def run_analysis():
     # --- 绘图优化 ---
     theme_color = "#00A3E0"
     
-    # 图 1: 累计次数 (优化 y 轴)
-    fig1 = px.line(df, x='时间', y='次数', template='plotly_dark', title="累计换电次数趋势")
+    # --- 图 1: 累计次数 (深度优化纵坐标) ---
+    fig1 = px.line(df, x='时间', y='次数', template='plotly_dark')
     fig1.update_traces(
-        line=dict(color=theme_color, width=3, shape='spline'), # spline 让线条变平滑
+        line=dict(color=theme_color, width=4, shape='spline', smoothing=1.3), # 极高平滑度
         fill='tozeroy', 
         fillcolor='rgba(0, 163, 224, 0.1)'
     )
-    fig1.update_yaxes(autorange=True, fixedrange=False, tickformat=",d") # 关键：自动缩放 y 轴，不从 0 开始
-    fig1.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=40,b=0))
+    # 强制不包含 0，并留出 10% 的上下边距让曲线更居中
+    fig1.update_yaxes(
+        autorange=True, 
+        rangemode="nonnegative", # 依然不显示负数
+        include_zero=False,      # 彻底禁用从 0 开始
+        tickformat=",d",
+        gridcolor='#222'
+    )
+    fig1.update_layout(title="累计换电次数趋势 (实时缩放)", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=40,b=0))
 
     # 图 2: 实时日频率趋势
     df_rate = df.dropna(subset=['daily_rate']).iloc[1:]
