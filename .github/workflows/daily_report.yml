@@ -39,10 +39,10 @@ jobs:
         
         # 检查文件是否存在
         if [ -f index.html ]; then
-          git add index.html
+          git add index.html daily_swaps.csv
           # 检查是否有内容变更，避免产生空的 commit 导致报错
           if git diff --staged --quiet; then
-            echo "No changes in index.html, skipping."
+            echo "No changes, skipping."
           else
             git commit -m "Update dashboard: $(date +'%Y-%m-%d %H:%M:%S')"
             git push origin main
