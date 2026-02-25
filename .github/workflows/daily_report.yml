@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'nio_swaps.csv'
+  workflow_dispatch:  # <-- 添加这一行，允许手动点击执行
 
 jobs:
   build:
