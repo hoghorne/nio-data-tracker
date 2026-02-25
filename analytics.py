@@ -1,7 +1,5 @@
 import pandas as pd
 import plotly.express as px
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
 import os
 from datetime import datetime, timedelta
 
@@ -35,42 +33,45 @@ def run_analysis():
     df['次数'] = pd.to_numeric(df['次数'], errors='coerce')
     df = df.dropna(subset=['次数'])
     
-    # --- 计算核心指标 ---
-    
-    # 1. 计算每条记录相对于上一条的“实时日频率” (即：增长量 / 时间差 * 24小时)
-    # 这样每一行数据都会有一个当下的“日速率”
-    df['diff_time'] = df['时间'].diff().dt.total_seconds() / 3600  # 小时差
+    # --- 计算指标 ---
+    # 计算实时日频率: (增长量 / 小时差) * 24
+    df['diff_time'] = df['时间'].diff().dt.total_seconds() / 3600
     df['diff_count'] = df['次数'].diff()
     df['daily_rate'] = (df['diff_count'] / df['diff_time']) * 24
     
-    # 2. 最近 1 小时的实时频率 (每小时)
     latest = df.iloc[-1]
+    
+    # 1h 频率
     one_hour_ago = latest['时间'] - timedelta(hours=1)
     df_1h = df[df['时间'] >= one_hour_ago]
-    if len(df_1h) > 1:
-        h_diff = (df_1h['时间'].iloc[-1] - df_1h['时间'].iloc[0]).total_seconds() / 3600
-        count_h = df_1h['次数'].iloc[-1] - df_1h['次数'].iloc[0]
-        speed_hour = count_h / h_diff if h_diff > 0 else 0
-    else:
-        speed_hour = 0
-
-    # 3. 实时换电频率 (每天) - 取最近几个数据点的平滑值，防止抖动太剧烈
+    speed_hour = (df_1h['次数'].iloc[-1] - df_1h['次数'].iloc[0]) / ((df_1h['时间'].iloc[-1] - df_1h['时间'].iloc[0]).total_seconds()/3600) if len(df_1h)>1 else 0
+    
+    # 实时日频率显示值 (取最后 5 个点的平均值以平滑数值显示)
     speed_day = df['daily_rate'].iloc[-5:].mean() if len(df) > 5 else 0
 
-    # --- 绘图 ---
+    # --- 绘图优化 ---
     theme_color = "#00A3E0"
     
-    # 图 1: 累计次数趋势
-    fig1 = px.line(df, x='时间', y='次数', template='plotly_dark', title="累计换电次数")
-    fig1.update_traces(line_color=theme_color, fill='tozeroy')
-    fig1.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=30,b=0))
+    # 图 1: 累计次数 (优化 y 轴)
+    fig1 = px.line(df, x='时间', y='次数', template='plotly_dark', title="累计换电次数趋势")
+    fig1.update_traces(
+        line=dict(color=theme_color, width=3, shape='spline'), # spline 让线条变平滑
+        fill='tozeroy', 
+        fillcolor='rgba(0, 163, 224, 0.1)'
+    )
+    fig1.update_yaxes(autorange=True, fixedrange=False, tickformat=",d") # 关键：自动缩放 y 轴，不从 0 开始
+    fig1.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=40,b=0))
 
     # 图 2: 实时日频率趋势
-    # 排除掉掉初始的 NaN 和异常值
-    df_plot_rate = df.dropna(subset=['daily_rate']).iloc[1:] 
-    fig2 = px.line(df_plot_rate, x='时间', y='daily_rate', template='plotly_dark', title="实时换电频率趋势 (次/天)")
-    fig2.update_traces(line_color="#2ecc71") # 绿色线条代表速率
-    fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=30,b=0))
+    df_rate = df.dropna(subset=['daily_rate']).iloc[1:]
+    # 过滤掉一些极端异常值（比如刚启动时的计算偏差）
+    upper_bound = df_rate['daily_rate'].quantile(0.95) * 2
+    df_rate = df_rate[df_rate['daily_rate'] < upper_bound]
+
+    fig2 = px.line(df_rate, x='时间', y='daily_rate', template='plotly_dark', title="实时换电频率趋势 (次/天)")
+    fig2.update_traces(line=dict(color="#2ecc71", width=2, shape='spline'))
+    fig2.update_yaxes(autorange=True, tickformat=",d")
+    fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=40,b=0))
 
     # --- HTML 构建 ---
     html_content = f"""
@@ -87,7 +88,7 @@ def run_analysis():
             .stat-box {{ background: #252b36; padding: 15px; border-radius: 10px; }}
             .label {{ color: #888; font-size: 14px; }}
             .value {{ font-size: 24px; color: {theme_color}; font-weight: bold; margin-top: 5px; }}
-            .chart-container {{ margin-top: 20px; display: grid; grid-template-columns: 1fr; gap: 20px; }}
+            .chart-container {{ margin-top: 20px; display: grid; grid-template-columns: 1fr; gap: 30px; }}
         </style>
     </head>
     <body>
@@ -116,7 +117,7 @@ def run_analysis():
             </div>
 
             <div style="margin-top:20px; color:#444; font-size:12px; text-align:center;">
-                Last Update: {latest['时间'].strftime('%Y-%m-%d %H:%M:%S')} | Data points: {len(df)}
+                Last Update: {latest['时间'].strftime('%Y-%m-%d %H:%M:%S')}
             </div>
         </div>
     </body>
@@ -125,7 +126,7 @@ def run_analysis():
 
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
-    print("Success: Updated dashboard with dual charts generated.")
+    print("Success: Visual optimized dashboard generated.")
 
 if __name__ == "__main__":
     run_analysis()
