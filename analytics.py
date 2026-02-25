@@ -4,105 +4,132 @@ import os
 from datetime import datetime, timedelta
 
 def run_analysis():
-    if not os.path.exists('nio_swaps.csv'):
+    # 1. 加载数据
+    file_path = 'nio_swaps.csv'
+    if not os.path.exists(file_path):
+        print(f"Error: {file_path} not found.")
         return
 
-    # 1. 加载数据
-    df = pd.read_csv('nio_swaps.csv', encoding='utf-8-sig')
+    # 使用 utf-8-sig 处理可能存在的 BOM 头
+    try:
+        df = pd.read_csv(file_path, encoding='utf-8-sig')
+    except Exception as e:
+        print(f"Read CSV Error: {e}")
+        return
+
+    # 【核心修复】清理列名：去除空格、换行符及不可见字符
+    df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
+    print(f"Current Columns: {df.columns.tolist()}")
+
+    # 【列名映射】确保代码能找到核心字段
+    mapping = {
+        '时间': ['时间', '日期', 'Time'],
+        '次数': ['换电次数', '次数', 'Count'],
+        '总站数': ['总站数', '站数', 'Stations'],
+        '高速站数': ['高速站数', '高速站', 'Highway']
+    }
+
+    for standard_name, aliases in mapping.items():
+        for alias in aliases:
+            if alias in df.columns and standard_name not in df.columns:
+                df.rename(columns={alias: standard_name}, inplace=True)
+
+    # 检查核心列
+    if '时间' not in df.columns or '次数' not in df.columns:
+        print("Error: Missing required columns '时间' or '次数'")
+        return
+
+    # 2. 数据处理
     df['时间'] = pd.to_datetime(df['时间'])
     df = df.sort_values('时间')
     latest = df.iloc[-1]
 
-    # 2. 计算速度 (最近1小时)
+    # 计算最近 1 小时速率
     one_hour_ago = latest['时间'] - timedelta(hours=1)
     df_recent = df[df['时间'] >= one_hour_ago]
     
     if len(df_recent) > 1:
-        # 计算每分钟的频率，再乘以 60 得到当前小时速率
         time_diff = (df_recent['时间'].iloc[-1] - df_recent['时间'].iloc[0]).total_seconds() / 3600
-        count_diff = df_recent['换电次数'].iloc[-1] - df_recent['换电次数'].iloc[0]
+        count_diff = int(df_recent['次数'].iloc[-1]) - int(df_recent['次数'].iloc[0])
         current_speed = count_diff / time_diff if time_diff > 0 else 0
     else:
         current_speed = 0
 
-    # 3. 根据速率决定颜色 (阈值可以根据实际观察调整)
-    # 低于 500: 冷色调, 500-1000: 中性, 1000+: 活跃
-    if current_speed < 500:
-        theme_color = "#00A3E0" # 蔚来蓝
-        status_text = "平稳"
-    elif current_speed < 1000:
-        theme_color = "#f39c12" # 橙色
-        status_text = "繁忙"
+    # 3. 动态视觉风格
+    if current_speed < 400:
+        theme_color = "#00A3E0"  # 蔚来蓝
+        status_text = "运行平稳"
+    elif current_speed < 800:
+        theme_color = "#f39c12"  # 繁忙橙
+        status_text = "补能活跃"
     else:
-        theme_color = "#e74c3c" # 红色
-        status_text = "极速"
+        theme_color = "#e74c3c"  # 极速红
+        status_text = "高峰时段"
 
-    # 4. 生成精美图表
-    fig = px.line(df, x='时间', y='换电次数', 
-                 title='累计换电增长曲线 (数据实时采集)',
-                 labels={'换电次数': '累计次数', '时间': '时间'},
-                 template='plotly_dark') # 改用深色模式更酷
-    fig.update_traces(line_color=theme_color, fill='tozeroy', fillcolor='rgba(0,163,224,0.1)')
+    # 4. 生成图表
+    fig = px.line(df, x='时间', y='次数', 
+                 title='NIO 累计换电次数实时趋势',
+                 template='plotly_dark')
+    
+    fig.update_traces(line_color=theme_color, fill='tozeroy', fillcolor=f'rgba({theme_color[1:3]},{theme_color[3:5]},{theme_color[5:7]},0.1)')
     fig.update_layout(
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         font_color="white",
-        margin=dict(l=20, r=20, t=50, b=20)
+        hovermode="x unified"
     )
 
-    # 5. 构建酷炫 HTML
+    # 5. 构建 HTML 页面
     html_content = f"""
     <!DOCTYPE html>
-    <html lang="zh">
+    <html>
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>NIO Power Live</title>
+        <title>NIO Power Live Monitor</title>
         <script src="https://cdn.plot.ly/plotly-latest.min.ts"></script>
         <style>
-            body {{ background: #0b0e14; color: white; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }}
-            .container {{ max-width: 1000px; margin: auto; }}
-            .header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2d3436; padding-bottom: 10px; }}
-            .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 20px 0; }}
-            .card {{ background: #1a1f28; padding: 25px; border-radius: 15px; border-left: 5px solid {theme_color}; box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: 0.3s; }}
-            .card:hover {{ transform: translateY(-5px); }}
-            .label {{ color: #b2bec3; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }}
-            .value {{ font-size: 32px; font-weight: bold; margin-top: 10px; font-family: 'Courier New', monospace; }}
-            .status-tag {{ background: {theme_color}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; vertical-align: middle; }}
-            .chart-container {{ background: #1a1f28; padding: 20px; border-radius: 15px; margin-top: 20px; }}
-            .footer {{ text-align: center; color: #636e72; font-size: 12px; margin-top: 30px; }}
-            @keyframes pulse {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} 100% {{ opacity: 1; }} }}
-            .live-dot {{ height: 10px; width: 10px; background-color: {theme_color}; border-radius: 50%; display: inline-block; animation: pulse 1s infinite; }}
+            body {{ background: #0b0e14; color: white; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; }}
+            .container {{ max-width: 1100px; margin: auto; }}
+            .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; border-bottom: 1px solid #2d3436; padding-bottom: 15px; }}
+            .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
+            .card {{ background: #1a1f28; padding: 25px; border-radius: 12px; border-top: 4px solid {theme_color}; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }}
+            .label {{ color: #888; font-size: 14px; margin-bottom: 8px; }}
+            .value {{ font-size: 36px; font-weight: 800; color: {theme_color}; }}
+            .unit {{ font-size: 16px; color: #555; margin-left: 5px; }}
+            .status-dot {{ height: 12px; width: 12px; background-color: {theme_color}; border-radius: 50%; display: inline-block; margin-right: 8px; animation: blink 1.5s infinite; }}
+            @keyframes blink {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} 100% {{ opacity: 1; }} }}
+            .chart-box {{ background: #1a1f28; padding: 20px; border-radius: 12px; margin-top: 30px; }}
+            .footer {{ margin-top: 40px; text-align: center; color: #444; font-size: 13px; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h2><span class="live-dot"></span> NIO POWER 实时监控</h2>
-                <div class="status-tag">系统状态: {status_text}</div>
+                <div style="font-size: 24px; font-weight: bold;">NIO Power <span style="color:{theme_color}">Live</span></div>
+                <div><span class="status-dot"></span> {status_text}</div>
             </div>
             
             <div class="stats-grid">
                 <div class="card">
-                    <div class="label">累计换电总次数</div>
-                    <div class="value">{latest['换电次数']:,}</div>
+                    <div class="label">累计换电次数</div>
+                    <div class="value">{int(latest['次数']):,}</div>
                 </div>
                 <div class="card">
-                    <div class="label">当前换电速率 (小时)</div>
-                    <div class="value">{current_speed:.1f} <span style="font-size:16px">次/h</span></div>
+                    <div class="label">实时频率 (1h内)</div>
+                    <div class="value">{current_speed:.1f}<span class="unit">次 / 小时</span></div>
                 </div>
                 <div class="card">
-                    <div class="label">累计换电站 / 高速</div>
-                    <div class="value">{latest['总站数']} / {latest['高速站数']}</div>
+                    <div class="label">补能网络 (总站数 / 高速)</div>
+                    <div class="value">{latest.get('总站数', 'N/A')} / {latest.get('高速站数', 'N/A')}</div>
                 </div>
             </div>
 
-            <div class="chart-container">
+            <div class="chart-box">
                 {fig.to_html(full_html=False, include_plotlyjs=False)}
             </div>
 
             <div class="footer">
-                数据自动采集于甲骨文云服务器 | 最后更新: {latest['时间']} (UTC+8)
+                Data Tracked by Oracle Cloud | Last Sync: {latest['时间'].strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)
             </div>
         </div>
     </body>
@@ -111,6 +138,7 @@ def run_analysis():
 
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
+    print("Success: Dashboard generated with dynamic theme.")
 
 if __name__ == "__main__":
     run_analysis()
