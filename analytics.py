@@ -20,7 +20,8 @@ def run_analysis():
     mapping = {
         '记录时间': '时间', '时间': '时间',
         '实时累计换电次数': '次数',
-        '换电站': '总站数', '高速换电站': '高速站数'
+        '换电站': '总站数', 
+        '高速换电站': '高速站数'
     }
     for old_name, new_name in mapping.items():
         if old_name in df.columns:
@@ -74,10 +75,10 @@ def run_analysis():
     fig1.update_traces(line=dict(color=theme_color, width=3, shape='spline', smoothing=1.3),
                        fill='tozeroy', fillcolor='rgba(0, 163, 224, 0.1)')
     fig1.update_yaxes(autorange=True, include_zero=False, tickformat=",d", gridcolor='#333')
-    fig1.update_layout(title="NIO 累计换电趋势 (实时缩放)", paper_bgcolor='rgba(0,0,0,0)', 
+    fig1.update_layout(title="NIO 累计换电次数 (实时缩放)", paper_bgcolor='rgba(0,0,0,0)', 
                        plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10,r=10,t=40,b=10))
 
-    # 图 2: 实时换电频率趋势 (当日)
+    # 图 2: 实时换电频率 (当日)
     # 我们绘制当日每一刻计算出的“日速率”变化
     df_today['moving_daily_rate'] = df_today.apply(
         lambda x: ((x['次数'] - first_point['次数']) / 
@@ -88,7 +89,7 @@ def run_analysis():
     fig2 = px.line(df_today[df_today['moving_daily_rate'] > 0], x='时间', y='moving_daily_rate', template='plotly_dark')
     fig2.update_traces(line=dict(color="#2ecc71", width=2))
     fig2.update_yaxes(autorange=True, include_zero=False, tickformat=",d", gridcolor='#333')
-    fig2.update_layout(title="当日实时换电频率走势 (次/天)", paper_bgcolor='rgba(0,0,0,0)', 
+    fig2.update_layout(title="当日实时换电频率 (次/天)", paper_bgcolor='rgba(0,0,0,0)', 
                        plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10,r=10,t=40,b=10))
 
     # --- 生成 HTML ---
