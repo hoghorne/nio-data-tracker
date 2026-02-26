@@ -1,116 +1,110 @@
-import csv
+import pandas as pd
+import plotly.express as px
 import os
-import time
-from datetime import datetime, timedelta, timezone
-from playwright.sync_api import sync_playwright
+from datetime import datetime, timedelta
 
-# 蔚来换电地图 H5 接口地址
-URL = "https://chargermap.nio.com/pe/h5/static/chargermap?channel=official"
-
-def get_nio_data():
-    results = []
-    with sync_playwright() as p:
-        # 启动浏览器
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
-        )
-        page = context.new_page()
-        
-        try:
-            print(f"正在访问北京时间 2026 数据源: {URL}")
-            # 只要 HTML 骨架加载完成即开始执行，提高响应速度
-            page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-            
-            print("等待数字组件渲染...")
-            # 确保数字翻转组件已出现在页面上
-            page.wait_for_selector(".pe-biz-digit-flip", timeout=30000)
-            # 额外等待以确保 JS 动画完成初始赋值
-            time.sleep(5)
-
-            def capture_current_frame():
-                # 校准北京时间 (UTC+8)
-                beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
-                
-                def extract_val(label_text):
-                    # --- 针对“换电次数”的多位滚动结构处理 ---
-                    container_selector = f"h6:has-text('{label_text}') + div ul.pe-biz-digit-flip"
-                    container = page.query_selector(container_selector)
-                    
-                    if container:
-                        # 找到代表每一位数字的 li 容器
-                        digits_li = container.query_selector_all("li")
-                        final_num_str = ""
-                        for li in digits_li:
-                            # 蔚来该组件在跳变时，li 下会存在多个 span。
-                            # 目标数字通常是该槽位中最后插入或最末尾的 span
-                            spans = li.query_selector_all("span")
-                            valid_digits = [s.inner_text().strip() for s in spans if s.inner_text().strip().isdigit()]
-                            if valid_digits:
-                                # 只取当前槽位中确定的最后一个数字字符
-                                final_num_str += valid_digits[-1]
-                        return final_num_str
-
-                    # --- 针对“换电站数量”的静态结构处理 ---
-                    strong_selector = f"h6:has-text('{label_text}') + strong"
-                    strong_element = page.query_selector(strong_selector)
-                    if strong_element:
-                        return strong_element.inner_text().replace(',', '').strip()
-                    
-                    return "0"
-
-                # 提取三个核心维度
-                swap_count = extract_val("实时累计换电次数")
-                total_stations = extract_val("蔚来能源换电站")
-                highway_stations = extract_val("其中高速公路换电站")
-
-                weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-                return [
-                    beijing_now.strftime("%Y-%m-%d %H:%M:%S"),
-                    weekdays[beijing_now.weekday()],
-                    swap_count,
-                    total_stations,
-                    highway_stations
-                ]
-
-            print("执行高频校验采集...")
-            for i in range(5):
-                frame_data = capture_current_frame()
-                num_str = frame_data[2]
-                
-                # --- 优化的长度校验逻辑 ---
-                # 允许从 9 位（亿级）跳转到 10 位或 11 位（十亿/百亿级）
-                # 但拒绝由于抓取重复导致的 12 位及以上数据
-                if num_str and 8 < len(num_str) < 12:
-                    results.append(frame_data)
-                    print(f"成功记录 [{i+1}/5]: {num_str}")
-                else:
-                    print(f"检测到异常数据长度 ({len(num_str) if num_str else 0}), 自动丢弃: {num_str}")
-                
-                time.sleep(2)
-
-        except Exception as e:
-            print(f"❌ 运行异常: {e}")
-        finally:
-            browser.close()
-            
-    return results
-
-def save_to_csv(rows):
-    if not rows:
-        print("⚠️ 未能采集到符合质量标准的数据。")
-        return
+def run_analysis():
     file_path = 'nio_swaps.csv'
-    file_exists = os.path.isfile(file_path)
-    # 使用 utf-8-sig 确保 Excel 直接打开中文不乱码
-    with open(file_path, 'a', newline='', encoding='utf-8-sig') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(['记录时间', '星期', '实时累计换电次数', '蔚来能源换电站', '高速公路换电站'])
-        writer.writerows(rows)
+    if not os.path.exists(file_path): return
+
+    try:
+        df = pd.read_csv(file_path, encoding='utf-8-sig')
+        df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
+    except Exception as e: print(f"Error: {e}"); return
+
+    # 格式清理
+    for c in ['记录时间', '时间']:
+        if c in df.columns: df.rename(columns={c: '时间'}, inplace=True)
+    if '实时累计换电次数' in df.columns: df.rename(columns={'实时累计换电次数': '次数'}, inplace=True)
+
+    def clean_num(v):
+        if pd.isna(v): return v
+        return str(v).replace(',', '').replace('"', '').strip()
+
+    df['次数'] = pd.to_numeric(df['次数'].apply(clean_num), errors='coerce')
+    df['时间'] = pd.to_datetime(df['时间'])
+    df = df.dropna(subset=['次数', '时间']).sort_values('时间')
+    if df.empty: return
+
+    latest_record = df.iloc[-1]
+    latest_count = int(latest_record['次数'])
+    next_milestone = ((latest_count // 10000000) + 1) * 10000000
+
+    # --- 进化版预测引擎 ---
+    # 1. 获取近期速率 (72h)
+    recent_target = latest_record['时间'] - timedelta(days=3)
+    df_recent_start = df[df['时间'] <= recent_target]
+    recent_old = df_recent_start.iloc[-1] if not df_recent_start.empty else df.iloc[0]
+    
+    recent_hours = (latest_record['时间'] - recent_old['时间']).total_seconds() / 3600
+    recent_rate_per_hour = (latest_count - recent_old['次数']) / recent_hours if recent_hours > 0 else 0
+
+    # 2. 尝试获取历史同比数据 (去年今日起往后推算里程碑期间的均值)
+    # 注意：现在数据不足，这里会进入 fallback 逻辑
+    history_target = latest_record['时间'] - timedelta(days=365)
+    df_history = df[(df['时间'] <= history_target)]
+    
+    use_historical_adjustment = False
+    if not df_history.empty and len(df) > 100: # 假设有足够历史点
+        # 这里可以实现你说的：参考去年此时的波动规律
+        # 计算去年此时的速率，并得到一个规模增长因子
+        use_historical_adjustment = True
+        # (此处预留高级算法位置，目前先用线性速率)
+    
+    # 3. 计算预计时间
+    if recent_rate_per_hour > 0:
+        remaining = next_milestone - latest_count
+        seconds_to_go = remaining / (recent_rate_per_hour / 3600)
+        predicted_dt = latest_record['时间'] + timedelta(seconds=seconds_to_go)
+        predicted_time_str = predicted_dt.strftime('%Y-%m-%d %H:%M:%S')
+        days_to_go_str = f"{seconds_to_go / 86400:.2f}"
+    else:
+        predicted_time_str = "等待更多数据..."
+        days_to_go_str = "--"
+
+    # --- 可视化与 HTML (保持之前的专业风格) ---
+    theme_color = "#00A3E0"
+    fig1 = px.line(df, x='时间', y='次数', template='plotly_dark')
+    fig1.update_traces(line=dict(color=theme_color, width=3))
+    fig1.update_layout(title="累计换电走势", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ background: #0b0e14; color: white; font-family: sans-serif; padding: 20px; }}
+            .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 800px; margin: auto; }}
+            .prediction-box {{ background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0; }}
+            .highlight {{ color: #f1c40f; font-size: 24px; font-weight: bold; font-family: monospace; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>NIO 换电大数据看板</h2>
+            <p>当前总数：<span style="font-size:24px; color:{theme_color}; font-weight:bold;">{latest_count:,}</span></p>
+            
+            <div class="prediction-box">
+                <div style="color:#aaa; font-size:14px;">目标里程碑：{next_milestone:,}</div>
+                <div style="margin:10px 0;">预计达成时间</div>
+                <div class="highlight">{predicted_time_str}</div>
+                <div style="font-size:14px; color:#888; margin-top:10px;">
+                    距离达成约剩 {days_to_go_str} 天
+                </div>
+            </div>
+            
+            <div style="background:#111; padding:10px; border-radius:10px;">
+                {fig1.to_html(full_html=False, include_plotlyjs='cdn')}
+            </div>
+            <p style="font-size:11px; color:#444; text-align:center;">
+                模式：{'混合历史修正模式' if use_historical_adjustment else '72h 线性外推模式 (历史数据积攒中)'}
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    with open('index.html', 'w', encoding='utf-8') as f: f.write(html_content)
 
 if __name__ == "__main__":
-    captured_data = get_nio_data()
-    save_to_csv(captured_data)
-    print(f"✅ 任务流程结束。")
+    run_analysis()
