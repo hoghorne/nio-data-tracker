@@ -32,7 +32,6 @@ def run_analysis():
 
     def clean_df(df_target):
         df_target['次数'] = pd.to_numeric(df_target['次数'].astype(str).str.replace(',', ''), errors='coerce')
-        # 针对历史和实时数据中可能存在的“站数”列进行兼容
         col_name = '站数' if '站数' in df_target.columns else None
         if col_name:
             df_target['站数'] = pd.to_numeric(df_target[col_name].astype(str).str.replace(',', ''), errors='coerce')
@@ -52,8 +51,8 @@ def run_analysis():
     prev_milestone = ((latest_count - 1) // 10000000) * 10000000 if latest_count > 0 else 0
     
     recent_target = latest['时间'] - timedelta(days=3)
-    df_recent = df_all[df_all['时间'] <= recent_target]
-    start_pt = df_recent.iloc[-1] if not df_recent.empty else df_all.iloc[0]
+    df_recent = df_all[df_all['时间'] >= recent_target] # 修正为大于等于最近3天
+    start_pt = df_recent.iloc[0] if not df_recent.empty else df_all.iloc[0]
     duration = (latest['时间'] - start_pt['时间']).total_seconds()
 
     if duration > 60:
@@ -113,36 +112,29 @@ def run_analysis():
     <html>
     <head>
         <meta charset="UTF-8">
+        <title>NIO Power Insight</title>
         <style>
             body {{ background: #0b0e14; color: white; font-family: -apple-system, sans-serif; padding: 15px; }}
             .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 1000px; margin: auto; }}
-            
             .predict-box {{ 
                 background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); 
-                padding: 30px; 
-                border-radius: 12px; 
-                margin: 20px 0; 
-                text-align: center; 
-                border: 1px solid #3e4b5b; 
-                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                padding: 30px; border-radius: 12px; margin: 20px 0; text-align: center; 
+                border: 1px solid #3e4b5b; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             }}
-            
             .milestone-label {{ color: #bdc3c7; font-size: 14px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }}
             .milestone-value {{ font-size: 32px; font-weight: 800; color: #ffffff; text-shadow: 0 0 15px rgba(255,255,255,0.3); margin-bottom: 20px; }}
-            
             .predict-label {{ color: #888; font-size: 13px; margin-bottom: 5px; }}
             .highlight {{ color: #f1c40f; font-size: 30px; font-weight: bold; font-family: 'Courier New', monospace; }}
-            
             .days-badge {{ 
-                display: inline-block; 
-                margin-top: 15px; 
-                background: rgba(255,255,255,0.1); 
-                padding: 5px 15px; 
-                border-radius: 20px; 
-                font-size: 14px; 
-                color: #ddd; 
+                display: inline-block; margin-top: 15px; background: rgba(255,255,255,0.1); 
+                padding: 5px 15px; border-radius: 20px; font-size: 14px; color: #ddd; 
             }}
             .station-val {{ color: {station_color}; font-weight: bold; }}
+            button {{
+                margin: 0 2px; padding: 4px 10px; background: #1e2530; color: #eee; 
+                border: 1px solid #3e4b5b; border-radius: 4px; cursor: pointer; transition: 0.2s;
+            }}
+            button:hover {{ background: #3e4b5b; }}
         </style>
     </head>
     <body>
@@ -163,25 +155,19 @@ def run_analysis():
             <div class="predict-box">
                 <div class="milestone-label">🏁 下一个里程碑目标</div>
                 <div class="milestone-value">{next_milestone:,} <span style="font-size:16px; font-weight:300;">次</span></div>
-                
                 <div style="width: 50px; height: 2px; background: {theme_color}; margin: 0 auto 20px auto; opacity: 0.5;"></div>
-                
                 <div class="predict-label">预计达成精确时刻</div>
                 <div class="highlight">{pred_time_str}</div>
-                
-                <div class="days-badge">
-                    距离达成约剩 <b style="color:#fff;">{days_left}</b> 天
-                </div>
+                <div class="days-badge">距离达成约剩 <b style="color:#fff;">{days_left}</b> 天</div>
             </div>
 
-            <div style="margin:10px 0 6px 0; text-align:right; font-size:12px;">
-                <span style="margin-right:8px; color:#888;">时间区间</span>
-                <button onclick="nioSetRangeHours(24)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">24小时</button>
-                <button onclick="nioSetRangeDays(7)"  style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">7天</button>
-                <button onclick="nioSetRangeDays(30)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">30天</button>
-                <button onclick="nioSetRangeDays(90)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">90天</button>
-                <button onclick="nioSetRangeDays(365)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">1年</button>
-                <button onclick="nioShowAll()"          style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">全部</button>
+            <div style="margin:10px 0 10px 0; text-align:right; font-size:12px;">
+                <span style="margin-right:8px; color:#888;">缩放区间:</span>
+                <button onclick="nioSetRange(24, 'hours')">24小时</button>
+                <button onclick="nioSetRange(7, 'days')">7天</button>
+                <button onclick="nioSetRange(30, 'days')">30天</button>
+                <button onclick="nioSetRange(90, 'days')">90天</button>
+                <button onclick="nioShowAll()">全部</button>
             </div>
             
             <div style="background:#000; padding:10px; border-radius:10px; border: 1px solid #222;">
@@ -190,76 +176,58 @@ def run_analysis():
         </div>
 
         <script>
-        // 将当前阶段的区间常量暴露给前端：上一个里程碑和当前累计次数
+        // 常量注入
         const NIO_PREV_MILESTONE = {prev_milestone};
-        const NIO_LATEST_COUNT   = {latest_count};
+        const NIO_LATEST_COUNT = {latest_count};
 
-        (function() {{
-            var plot = document.querySelector('.plotly-graph-div');
-            if (!plot || typeof Plotly === 'undefined') return;
+        function getPlotlyDiv() {{
+            return document.querySelector('.plotly-graph-div');
+        }}
 
-            function parseTime(xVal) {{
-                var s = String(xVal);
-                var dot = s.indexOf('.');
-                if (dot > 0) {{
-                    s = s.slice(0, dot);
+        window.nioSetRange = function(value, unit) {{
+            const plotDiv = getPlotlyDiv();
+            if (!plotDiv || typeof Plotly === 'undefined') return;
+
+            // 获取数据中的最新时间点
+            let latestTime = 0;
+            plotDiv.data.forEach(trace => {{
+                if (trace.x && trace.x.length > 0) {{
+                    const times = trace.x.map(t => new Date(t).getTime());
+                    const max = Math.max(...times);
+                    if (max > latestTime) latestTime = max;
                 }}
-                return new Date(s);
-            }}
+            }});
 
-            function getLatestDataTime() {{
-                var latest = null;
-                if (!plot.data) return null;
-                plot.data.forEach(function(trace) {{
-                    if (!trace.x) return;
-                    trace.x.forEach(function(xVal) {{
-                        var t = parseTime(xVal);
-                        if (!(t instanceof Date) || isNaN(t.getTime())) return;
-                        if (!latest || t > latest) latest = t;
-                    }});
-                }});
-                return latest;
-            }}
+            const endTime = latestTime > 0 ? latestTime : new Date().getTime();
+            const ms = unit === 'hours' ? value * 3600000 : value * 86400000;
+            const startTime = endTime - ms;
 
-            function setRangeMs(ms, useMilestoneRange) {{
-                var end = getLatestDataTime() || new Date();
-                var start = new Date(end.getTime() - ms);
-
-                var update = {{
-                    'xaxis.range': [start.toISOString(), end.toISOString()]
-                }};
-
-                if (useMilestoneRange && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
-                    var upper = NIO_LATEST_COUNT * 1.001;
-                    update['yaxis.range'] = [NIO_PREV_MILESTONE, upper];
-                }} else {{
-                    update['yaxis.autorange'] = true;
-                }}
-
-                update['yaxis2.autorange'] = true;
-
-                Plotly.relayout(plot, update);
-            }}
-
-            // 24 小时、7 天、30 天：Y 轴固定为「上一个里程碑 → 当前累计次数」
-            window.nioSetRangeHours = function(hours) {{
-                var useMilestone = hours <= 24;
-                setRangeMs(hours * 60 * 60 * 1000, useMilestone);
+            const update = {{
+                'xaxis.range': [new Date(startTime).toISOString(), new Date(endTime).toISOString()]
             }};
 
-            window.nioSetRangeDays = function(days) {{
-                var useMilestone = days <= 30;
-                setRangeMs(days * 24 * 60 * 60 * 1000, useMilestone);
-            }};
+            // 如果是短时间区间，锁定Y轴到当前里程碑段
+            if (value <= 30 && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
+                update['yaxis.range'] = [NIO_PREV_MILESTONE, NIO_LATEST_COUNT * 1.005];
+                update['yaxis.autorange'] = false;
+            }} else {{
+                update['yaxis.autorange'] = true;
+            }}
+            
+            update['yaxis2.autorange'] = true;
+            Plotly.relayout(plotDiv, update);
+        }};
 
-            window.nioShowAll = function() {{
-                Plotly.relayout(plot, {{
+        window.nioShowAll = function() {{
+            const plotDiv = getPlotlyDiv();
+            if (plotDiv) {{
+                Plotly.relayout(plotDiv, {{
                     'xaxis.autorange': true,
                     'yaxis.autorange': true,
                     'yaxis2.autorange': true
                 }});
-            }};
-        }})();
+            }}
+        }};
         </script>
     </body>
     </html>
