@@ -11,12 +11,13 @@ def run_analysis():
         return
 
     try:
+        # 读取 CSV 并清洗列名
         df = pd.read_csv(file_path, encoding='utf-8-sig')
         df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
     except Exception as e:
         print(f"Read CSV Error: {e}"); return
 
-    # 数据清洗与格式转换
+    # 标准化列名映射
     mapping = {
         '记录时间': '时间', '时间': '时间',
         '实时累计换电次数': '次数'
@@ -25,6 +26,7 @@ def run_analysis():
         if old_name in df.columns:
             df.rename(columns={old_name: new_name}, inplace=True)
 
+    # 转换数字格式
     def clean_num(value):
         if pd.isna(value): return value
         if isinstance(value, str):
@@ -61,25 +63,32 @@ def run_analysis():
     else:
         old_record = df_history.iloc[-1]
 
-    # 计算时间差（小时）和次数差
-    time_diff_hours = (latest_record['时间'] - old_record['时间']).total_seconds() / 3600
+    # 计算时间差和次数差
+    time_diff = latest_record['时间'] - old_record['时间']
+    time_diff_hours = time_diff.total_seconds() / 3600
     count_diff = latest_count - old_record['次数']
 
-    if time_diff_hours > 1:
-        # 计算日均速率 (24小时)
-        rate_per_day = (count_diff / time_diff_hours) * 24
+    if time_diff_hours > 0.1: # 确保有足够的时间跨度
+        # 计算每秒换电速率
+        rate_per_second = count_diff / time_diff.total_seconds()
+        # 日均速率 (仅用于显示)
+        rate_per_day = rate_per_second * 86400
         
-        # 计算剩余量和预计时间
+        # 计算剩余量和预计达成时间
         remaining_swaps = next_milestone - latest_count
-        days_to_go = remaining_swaps / rate_per_day
-        predicted_dt = latest_record['时间'] + timedelta(days=days_to_go)
+        seconds_to_go = remaining_swaps / rate_per_second
         
-        days_to_go_str = f"{days_to_go:.1f}"
-        predicted_date_str = predicted_dt.strftime('%Y-%m-%d')
+        predicted_dt = latest_record['时间'] + timedelta(seconds=seconds_to_go)
+        
+        # 格式化输出：2026-02-25 00:10:23
+        predicted_time_str = predicted_dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 计算倒计时天数（带1位小数展示）
+        days_to_go_str = f"{seconds_to_go / 86400:.1f}"
     else:
         rate_per_day = 0
+        predicted_time_str = "计算中..."
         days_to_go_str = "--"
-        predicted_date_str = "计算中..."
 
     # 3. 计算每日增量 (用于图表)
     all_dates = sorted(df['时间'].dt.date.unique())
@@ -107,12 +116,12 @@ def run_analysis():
     fig1 = px.line(df, x='时间', y='次数', template='plotly_dark')
     fig1.update_traces(line=dict(color=theme_color, width=3))
     fig1.update_yaxes(autorange=True, tickformat=",d", gridcolor='#333', rangemode="normal")
-    fig1.update_layout(title="累计换电走势 (72h 采样平滑)", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10,r=10,t=40,b=10))
+    fig1.update_layout(title="累计换电趋势", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10,r=10,t=40,b=10))
 
     # 图 2: 日增量
     fig2 = px.bar(df_daily.tail(15), x='日期', y='增量', template='plotly_dark', color='状态', 
                   color_discrete_map={'推算': '#555', '完成': '#2ecc71'})
-    fig2.update_layout(title="最近 15 天日换电增量", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10,r=10,t=40,b=10), showlegend=False)
+    fig2.update_layout(title="最近 15 天日增量统计", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10,r=10,t=40,b=10), showlegend=False)
 
     # --- 生成 HTML ---
     html_content = f"""
@@ -126,43 +135,44 @@ def run_analysis():
             .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 900px; margin: auto; }}
             .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px; }}
             .stat-box {{ background: #252b36; padding: 15px; border-radius: 10px; }}
-            .prediction-card {{ background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); padding: 20px; border-radius: 12px; margin: 20px 0; border: 1px solid #3e4b5b; text-align: center; }}
+            .prediction-card {{ background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); padding: 25px; border-radius: 12px; margin: 20px 0; border: 1px solid #3e4b5b; text-align: center; }}
             .label {{ color: #999; font-size: 13px; margin-bottom: 5px; }}
             .value {{ font-size: 24px; font-weight: bold; color: {theme_color}; }}
-            .highlight {{ color: #f1c40f; font-size: 22px; font-weight: bold; }}
+            .highlight {{ color: #f1c40f; font-size: 22px; font-weight: bold; font-family: 'Courier New', Courier, monospace; }}
             .chart-box {{ margin-top: 20px; background: #111; padding: 10px; border-radius: 10px; }}
         </style>
     </head>
     <body>
         <div class="card">
-            <h2 style="margin:0 0 15px 0;">NIO 换电实时监控</h2>
+            <h2 style="margin:0 0 15px 0; font-size: 22px;">NIO 换电实时监控与预测</h2>
             
             <div class="stat-box" style="text-align:center;">
-                <div class="label">当前实时累计换电总数</div>
+                <div class="label">实时累计换电总数</div>
                 <div style="font-size: 38px; font-weight: bold; letter-spacing: 1px;">{latest_count:,}</div>
-                <div style="color:#555; font-size:12px;">同步时间: {latest_record['时间'].strftime('%Y-%m-%d %H:%M:%S')}</div>
+                <div style="color:#555; font-size:12px;">数据同步至: {latest_record['时间'].strftime('%Y-%m-%d %H:%M:%S')}</div>
             </div>
 
             <div class="stats-grid">
                 <div class="stat-box">
-                    <div class="label">72h 平均时速</div>
+                    <div class="label">72h 平均增速</div>
                     <div class="value">{int(rate_per_day/24):,} <span style="font-size:14px;">次/时</span></div>
                 </div>
                 <div class="stat-box">
-                    <div class="label">预计日增量</div>
+                    <div class="label">预计日均增量</div>
                     <div class="value" style="color:#2ecc71;">{int(rate_per_day):,} <span style="font-size:14px;">次/日</span></div>
                 </div>
             </div>
 
             <div class="prediction-card">
-                <div style="color:#bdc3c7; font-size:14px;">目标里程碑：<b style="color:white; font-size:16px;">{next_milestone:,}</b></div>
-                <div style="margin: 10px 0;">
-                    预计还需 <span class="highlight">{days_to_go_str}</span> 天
+                <div style="color:#bdc3c7; font-size:14px;">目标里程碑：<b style="color:white; font-size:16px;">{next_milestone:,} 次</b></div>
+                <div style="margin: 15px 0;">
+                    <div class="label">预计达成精确时间</div>
+                    <div class="highlight">{predicted_time_str}</div>
                 </div>
-                <div style="font-size: 16px;">
-                    预计达成日期：<span class="highlight">{predicted_date_str}</span>
+                <div style="font-size: 15px; color: #bdc3c7;">
+                    距离达成约剩 <span style="color:white; font-weight:bold;">{days_to_go_str}</span> 天
                 </div>
-                <div style="color:#666; font-size:11px; margin-top:8px;">* 基于过去 72 小时换电速率推算</div>
+                <div style="color:#666; font-size:11px; margin-top:12px;">* 预测逻辑：基于过去 72 小时平均换电斜率动态推算</div>
             </div>
 
             <div class="chart-box">{fig1.to_html(full_html=False, include_plotlyjs='cdn')}</div>
