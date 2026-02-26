@@ -32,7 +32,12 @@ def run_analysis():
 
     def clean_df(df_target):
         df_target['次数'] = pd.to_numeric(df_target['次数'].astype(str).str.replace(',', ''), errors='coerce')
-        df_target['站数'] = pd.to_numeric(df_target['站数'].astype(str).str.replace(',', ''), errors='coerce') if '站_数' in df_target.columns or '站数' in df_target.columns else np.nan
+        # 针对历史和实时数据中可能存在的“站数”列进行兼容
+        col_name = '站数' if '站数' in df_target.columns else None
+        if col_name:
+            df_target['站数'] = pd.to_numeric(df_target[col_name].astype(str).str.replace(',', ''), errors='coerce')
+        else:
+            df_target['站数'] = np.nan
         df_target['时间'] = pd.to_datetime(df_target['时间'], errors='coerce')
         return df_target.dropna(subset=['时间', '次数']).sort_values('时间')
 
@@ -44,6 +49,7 @@ def run_analysis():
     latest = df_all.iloc[-1]
     latest_count = int(latest['次数'])
     next_milestone = ((latest_count // 10000000) + 1) * 10000000
+    
     recent_target = latest['时间'] - timedelta(days=3)
     df_recent = df_all[df_all['时间'] <= recent_target]
     start_pt = df_recent.iloc[-1] if not df_recent.empty else df_all.iloc[0]
@@ -58,64 +64,49 @@ def run_analysis():
     else:
         pred_time_str = "计算中..."; days_left = "--"
 
-    # --- 可视化：优化悬停样式 ---
+    # --- 可视化配置 ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    theme_color = "#00A3E0"   # 蔚来蓝
-    station_color = "#2ecc71" # 换电站绿
+    theme_color = "#00A3E0"   # NIO Blue
+    station_color = "#2ecc71" # Station Green
 
-    # 1. 历史里程碑 (虚线)
     if not df_hist.empty:
         fig.add_trace(go.Scatter(
             x=df_hist['时间'], y=df_hist['次数'],
-            name="历史里程碑", 
-            line=dict(color=theme_color, width=2, dash='dash'),
+            name="历史里程碑", line=dict(color=theme_color, width=2, dash='dash'),
             hovertemplate="<b>历史里程碑</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
         ), secondary_y=False)
 
-    # 2. 实时监测 (实线)
     if not df_now.empty:
         fig.add_trace(go.Scatter(
             x=df_now['时间'], y=df_now['次数'],
-            name="实时监测", 
-            line=dict(color=theme_color, width=4),
+            name="实时监测数据", line=dict(color=theme_color, width=4),
             fill='tozeroy', fillcolor='rgba(0,163,224,0.1)',
-            hovertemplate="<b>实时监测数据</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
+            hovertemplate="<b>实时监测</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
         ), secondary_y=False)
 
-    # 3. 换电站数量 (阶梯线)
     df_stations = df_all.dropna(subset=['站数'])
     if not df_stations.empty:
         fig.add_trace(go.Scatter(
             x=df_stations['时间'], y=df_stations['站数'],
-            name="换电站总数", 
-            line=dict(color=station_color, width=2, shape='hv'),
+            name="换电站总数", line=dict(color=station_color, width=2, shape='hv'),
             hovertemplate="<b>换电站分布</b><br>时间: %{x}<br>站数: %{y}<extra></extra>"
         ), secondary_y=True)
 
-    # --- 核心优化：修改 Hover 样式 ---
     fig.update_layout(
-        title="NIO Power 换电史诗全景看板",
         template='plotly_dark',
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         hovermode="x unified",
-        # 全局悬停标签样式
-        hoverlabel=dict(
-            bgcolor="#1a1f28",      # 深色背景
-            font_size=14,           # 字体加大
-            font_family="monospace", 
-            font_color="white",     # 白色文字
-            bordercolor="#3e4b5b"   # 边框颜色
-        ),
+        hoverlabel=dict(bgcolor="#1a1f28", font_size=14, font_family="monospace", font_color="white"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=10,r=10,t=80,b=10)
+        margin=dict(l=10,r=10,t=40,b=10)
     )
     
     fig.update_xaxes(rangeslider_visible=True, gridcolor='#333')
     fig.update_yaxes(title_text="换电总次数", secondary_y=False, tickformat=",d", gridcolor='#333')
     fig.update_yaxes(title_text="换电站数量", secondary_y=True, showgrid=False)
 
-    # --- HTML 生成 ---
+    # --- HTML 渲染 ---
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -124,35 +115,65 @@ def run_analysis():
         <style>
             body {{ background: #0b0e14; color: white; font-family: -apple-system, sans-serif; padding: 15px; }}
             .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 1000px; margin: auto; }}
-            .predict-box {{ background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); padding: 25px; border-radius: 12px; margin: 20px 0; text-align: center; border: 1px solid #3e4b5b; }}
-            .highlight {{ color: #f1c40f; font-size: 28px; font-weight: bold; font-family: monospace; }}
+            
+            .predict-box {{ 
+                background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); 
+                padding: 30px; 
+                border-radius: 12px; 
+                margin: 20px 0; 
+                text-align: center; 
+                border: 1px solid #3e4b5b; 
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            }}
+            
+            .milestone-label {{ color: #bdc3c7; font-size: 14px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }}
+            .milestone-value {{ font-size: 32px; font-weight: 800; color: #ffffff; text-shadow: 0 0 15px rgba(255,255,255,0.3); margin-bottom: 20px; }}
+            
+            .predict-label {{ color: #888; font-size: 13px; margin-bottom: 5px; }}
+            .highlight {{ color: #f1c40f; font-size: 30px; font-weight: bold; font-family: 'Courier New', monospace; }}
+            
+            .days-badge {{ 
+                display: inline-block; 
+                margin-top: 15px; 
+                background: rgba(255,255,255,0.1); 
+                padding: 5px 15px; 
+                border-radius: 20px; 
+                font-size: 14px; 
+                color: #ddd; 
+            }}
             .station-val {{ color: {station_color}; font-weight: bold; }}
         </style>
     </head>
     <body>
         <div class="card">
-            <h2 style="margin:0;">NIO Power 实时监测大屏</h2>
-            <div style="margin: 15px 0; display: flex; justify-content: space-between; align-items: flex-end;">
+            <h2 style="margin:0; font-weight: 300; letter-spacing: 1px;">NIO Power <span style="font-weight:700;">INSIGHT</span></h2>
+            
+            <div style="margin: 20px 0; display: flex; justify-content: space-between; align-items: flex-end;">
                 <div>
-                    <div style="color:#888; font-size:13px;">实时累计换电总数</div>
-                    <div style="font-size: 36px; font-weight: bold;">{latest_count:,}</div>
+                    <div style="color:#888; font-size:12px;">实时累计换电总数</div>
+                    <div style="font-size: 38px; font-weight: 800; color: {theme_color};">{latest_count:,}</div>
                 </div>
                 <div style="text-align: right;">
-                    <div style="color:#888; font-size:13px;">当前换电站总数</div>
-                    <div class="station-val" style="font-size: 24px;">{int(latest['站数']) if not pd.isna(latest['站数']) else '同步中...'}</div>
+                    <div style="color:#888; font-size:12px;">换电站总数</div>
+                    <div class="station-val" style="font-size: 26px;">{int(latest['站数']) if not pd.isna(latest['站数']) else '--'}</div>
                 </div>
             </div>
             
             <div class="predict-box">
-                <div style="color:#bdc3c7; font-size:13px;">🏁 目标里程碑：{next_milestone:,}</div>
-                <div style="margin: 10px 0; font-size: 16px;">预计达成时刻</div>
+                <div class="milestone-label">🏁 下一个里程碑目标</div>
+                <div class="milestone-value">{next_milestone:,} <span style="font-size:16px; font-weight:300;">次</span></div>
+                
+                <div style="width: 50px; height: 2px; background: {theme_color}; margin: 0 auto 20px auto; opacity: 0.5;"></div>
+                
+                <div class="predict-label">预计达成精确时刻</div>
                 <div class="highlight">{pred_time_str}</div>
-                <div style="margin-top: 10px; font-size: 14px; color:#bdc3c7;">
-                    倒计时约 <b style="color:white;">{days_left}</b> 天
+                
+                <div class="days-badge">
+                    距离达成约剩 <b style="color:#fff;">{days_left}</b> 天
                 </div>
             </div>
 
-            <div style="background:#000; padding:10px; border-radius:10px;">
+            <div style="background:#000; padding:10px; border-radius:10px; border: 1px solid #222;">
                 {fig.to_html(full_html=False, include_plotlyjs='cdn')}
             </div>
         </div>
