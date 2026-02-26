@@ -49,6 +49,7 @@ def run_analysis():
     latest = df_all.iloc[-1]
     latest_count = int(latest['次数'])
     next_milestone = ((latest_count // 10000000) + 1) * 10000000
+    prev_milestone = ((latest_count - 1) // 10000000) * 10000000 if latest_count > 0 else 0
     
     recent_target = latest['时间'] - timedelta(days=3)
     df_recent = df_all[df_all['时间'] <= recent_target]
@@ -79,8 +80,8 @@ def run_analysis():
     if not df_now.empty:
         fig.add_trace(go.Scatter(
             x=df_now['时间'], y=df_now['次数'],
-            name="实时监测数据", line=dict(color=theme_color, width=4),
-            fill='tozeroy', fillcolor='rgba(0,163,224,0.1)',
+            name="实时监测数据",
+            line=dict(color=theme_color, width=4),
             hovertemplate="<b>实时监测</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
         ), secondary_y=False)
 
@@ -103,7 +104,7 @@ def run_analysis():
     )
     
     fig.update_xaxes(rangeslider_visible=True, gridcolor='#333')
-    fig.update_yaxes(title_text="换电总次数", secondary_y=False, tickformat=",d", gridcolor='#333')
+    fig.update_yaxes(title_text="换电总次数", secondary_y=False, tickformat=",d", gridcolor='#333', rangemode='normal')
     fig.update_yaxes(title_text="换电站数量", secondary_y=True, showgrid=False)
 
     # --- HTML 渲染 ---
@@ -173,10 +174,93 @@ def run_analysis():
                 </div>
             </div>
 
+            <div style="margin:10px 0 6px 0; text-align:right; font-size:12px;">
+                <span style="margin-right:8px; color:#888;">时间区间</span>
+                <button onclick="nioSetRangeHours(24)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">24小时</button>
+                <button onclick="nioSetRangeDays(7)"  style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">7天</button>
+                <button onclick="nioSetRangeDays(30)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">30天</button>
+                <button onclick="nioSetRangeDays(90)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">90天</button>
+                <button onclick="nioSetRangeDays(365)" style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">1年</button>
+                <button onclick="nioShowAll()"          style="margin:0 2px; padding:4px 8px; background:#1e2530; color:#eee; border:1px solid #3e4b5b; border-radius:4px; cursor:pointer;">全部</button>
+            </div>
+            
             <div style="background:#000; padding:10px; border-radius:10px; border: 1px solid #222;">
                 {fig.to_html(full_html=False, include_plotlyjs='cdn')}
             </div>
         </div>
+
+        <script>
+        // 将当前阶段的区间常量暴露给前端：上一个里程碑和当前累计次数
+        const NIO_PREV_MILESTONE = {prev_milestone};
+        const NIO_LATEST_COUNT   = {latest_count};
+
+        (function() {{
+            var plot = document.querySelector('.plotly-graph-div');
+            if (!plot || typeof Plotly === 'undefined') return;
+
+            function parseTime(xVal) {{
+                var s = String(xVal);
+                var dot = s.indexOf('.');
+                if (dot > 0) {{
+                    s = s.slice(0, dot);
+                }}
+                return new Date(s);
+            }}
+
+            function getLatestDataTime() {{
+                var latest = null;
+                if (!plot.data) return null;
+                plot.data.forEach(function(trace) {{
+                    if (!trace.x) return;
+                    trace.x.forEach(function(xVal) {{
+                        var t = parseTime(xVal);
+                        if (!(t instanceof Date) || isNaN(t.getTime())) return;
+                        if (!latest || t > latest) latest = t;
+                    }});
+                }});
+                return latest;
+            }}
+
+            function setRangeMs(ms, useMilestoneRange) {{
+                var end = getLatestDataTime() || new Date();
+                var start = new Date(end.getTime() - ms);
+
+                var update = {{
+                    'xaxis.range': [start.toISOString(), end.toISOString()]
+                }};
+
+                if (useMilestoneRange && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
+                    var upper = NIO_LATEST_COUNT * 1.001;
+                    update['yaxis.range'] = [NIO_PREV_MILESTONE, upper];
+                }} else {{
+                    update['yaxis.autorange'] = true;
+                }}
+
+                update['yaxis2.autorange'] = true;
+
+                Plotly.relayout(plot, update);
+            }}
+
+            // 24 小时、7 天、30 天：Y 轴固定为「上一个里程碑 → 当前累计次数」
+            window.nioSetRangeHours = function(hours) {{
+                var useMilestone = hours <= 24;
+                setRangeMs(hours * 60 * 60 * 1000, useMilestone);
+            }};
+
+            window.nioSetRangeDays = function(days) {{
+                var useMilestone = days <= 30;
+                setRangeMs(days * 24 * 60 * 60 * 1000, useMilestone);
+            }};
+
+            window.nioShowAll = function() {{
+                Plotly.relayout(plot, {{
+                    'xaxis.autorange': true,
+                    'yaxis.autorange': true,
+                    'yaxis2.autorange': true
+                }});
+            }};
+        }})();
+        </script>
     </body>
     </html>
     """
