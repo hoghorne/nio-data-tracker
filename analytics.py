@@ -20,7 +20,6 @@ def run_analysis():
                 '换电站': '站数', '总站数': '站数'
             }
             temp.rename(columns=mapping, inplace=True)
-            # 确保关键列存在
             for col in ['时间', '次数']:
                 if col not in temp.columns: return None
             return temp
@@ -31,34 +30,25 @@ def run_analysis():
 
     if df_now_raw is None and df_hist_raw is None: return
 
-    # --- 数据清洗逻辑 ---
     def clean_df(df_target):
         df_target['次数'] = pd.to_numeric(df_target['次数'].astype(str).str.replace(',', ''), errors='coerce')
-        if '站数' in df_target.columns:
-            df_target['站数'] = pd.to_numeric(df_target['站数'].astype(str).str.replace(',', ''), errors='coerce')
-        else:
-            df_target['站数'] = np.nan
+        df_target['站数'] = pd.to_numeric(df_target['站数'].astype(str).str.replace(',', ''), errors='coerce') if '站_数' in df_target.columns or '站数' in df_target.columns else np.nan
         df_target['时间'] = pd.to_datetime(df_target['时间'], errors='coerce')
         return df_target.dropna(subset=['时间', '次数']).sort_values('时间')
 
-    # 处理两组数据
     df_now = clean_df(df_now_raw) if df_now_raw is not None else pd.DataFrame()
     df_hist = clean_df(df_hist_raw) if df_hist_raw is not None else pd.DataFrame()
-
-    # 合并用于预测
     df_all = pd.concat([df_hist, df_now], ignore_index=True).drop_duplicates(subset=['时间']).sort_values('时间')
 
-    # --- 预测逻辑 (保持秒级) ---
+    # --- 预测逻辑 ---
     latest = df_all.iloc[-1]
     latest_count = int(latest['次数'])
     next_milestone = ((latest_count // 10000000) + 1) * 10000000
-    
-    # 采样近72h速率
     recent_target = latest['时间'] - timedelta(days=3)
     df_recent = df_all[df_all['时间'] <= recent_target]
     start_pt = df_recent.iloc[-1] if not df_recent.empty else df_all.iloc[0]
-    
     duration = (latest['时间'] - start_pt['时间']).total_seconds()
+
     if duration > 60:
         rate = (latest['次数'] - start_pt['次数']) / duration
         sec_to_go = (next_milestone - latest['次数']) / rate
@@ -68,47 +58,55 @@ def run_analysis():
     else:
         pred_time_str = "计算中..."; days_left = "--"
 
-    # --- 可视化：双 Y 轴 + 虚实结合 ---
-    # 创建带双 Y 轴的图表
+    # --- 可视化：优化悬停样式 ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-
     theme_color = "#00A3E0"   # 蔚来蓝
-    station_color = "#2ecc71" # 站数绿
+    station_color = "#2ecc71" # 换电站绿
 
-    # 1. 历史数据 - 虚线 (Dash)
+    # 1. 历史里程碑 (虚线)
     if not df_hist.empty:
         fig.add_trace(go.Scatter(
             x=df_hist['时间'], y=df_hist['次数'],
-            name="历史里程碑", line=dict(color=theme_color, width=2, dash='dash'),
-            hovertemplate="时间: %{x}<br>次数: %{y:,}"
+            name="历史里程碑", 
+            line=dict(color=theme_color, width=2, dash='dash'),
+            hovertemplate="<b>历史里程碑</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
         ), secondary_y=False)
 
-    # 2. 实时数据 - 实线 (Solid)
+    # 2. 实时监测 (实线)
     if not df_now.empty:
         fig.add_trace(go.Scatter(
             x=df_now['时间'], y=df_now['次数'],
-            name="实时监测", line=dict(color=theme_color, width=4),
+            name="实时监测", 
+            line=dict(color=theme_color, width=4),
             fill='tozeroy', fillcolor='rgba(0,163,224,0.1)',
-            hovertemplate="时间: %{x}<br>次数: %{y:,}"
+            hovertemplate="<b>实时监测数据</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
         ), secondary_y=False)
 
-    # 3. 换电站数量 - 阶梯线 (如果有数据)
-    # 合并所有有站数的数据点
+    # 3. 换电站数量 (阶梯线)
     df_stations = df_all.dropna(subset=['站数'])
     if not df_stations.empty:
         fig.add_trace(go.Scatter(
             x=df_stations['时间'], y=df_stations['站数'],
-            name="换电站总数", line=dict(color=station_color, width=2, shape='hv'),
-            hovertemplate="时间: %{x}<br>站数: %{y}"
+            name="换电站总数", 
+            line=dict(color=station_color, width=2, shape='hv'),
+            hovertemplate="<b>换电站分布</b><br>时间: %{x}<br>站数: %{y}<extra></extra>"
         ), secondary_y=True)
 
-    # 布局美化
+    # --- 核心优化：修改 Hover 样式 ---
     fig.update_layout(
-        title="NIO 换电史诗全景看板 (虚线为历史记录，实线为实时监测)",
+        title="NIO Power 换电史诗全景看板",
         template='plotly_dark',
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         hovermode="x unified",
+        # 全局悬停标签样式
+        hoverlabel=dict(
+            bgcolor="#1a1f28",      # 深色背景
+            font_size=14,           # 字体加大
+            font_family="monospace", 
+            font_color="white",     # 白色文字
+            bordercolor="#3e4b5b"   # 边框颜色
+        ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=10,r=10,t=80,b=10)
     )
@@ -124,7 +122,7 @@ def run_analysis():
     <head>
         <meta charset="UTF-8">
         <style>
-            body {{ background: #0b0e14; color: white; font-family: sans-serif; padding: 15px; }}
+            body {{ background: #0b0e14; color: white; font-family: -apple-system, sans-serif; padding: 15px; }}
             .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 1000px; margin: auto; }}
             .predict-box {{ background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); padding: 25px; border-radius: 12px; margin: 20px 0; text-align: center; border: 1px solid #3e4b5b; }}
             .highlight {{ color: #f1c40f; font-size: 28px; font-weight: bold; font-family: monospace; }}
@@ -146,7 +144,7 @@ def run_analysis():
             </div>
             
             <div class="predict-box">
-                <div style="color:#bdc3c7; font-size:13px;">🏁 下一个一千万里程碑：{next_milestone:,}</div>
+                <div style="color:#bdc3c7; font-size:13px;">🏁 目标里程碑：{next_milestone:,}</div>
                 <div style="margin: 10px 0; font-size: 16px;">预计达成时刻</div>
                 <div class="highlight">{pred_time_str}</div>
                 <div style="margin-top: 10px; font-size: 14px; color:#bdc3c7;">
