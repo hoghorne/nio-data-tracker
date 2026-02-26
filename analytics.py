@@ -1,5 +1,7 @@
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import os
 from datetime import datetime, timedelta
 import numpy as np
@@ -8,129 +10,152 @@ def run_analysis():
     current_file = 'nio_swaps.csv'
     history_file = 'nio_swaps_history.csv'
     
-    # --- 1. 数据聚合 ---
-    data_frames = []
-    
-    def load_and_clean(path):
-        if not os.path.exists(path):
-            return None
+    def load_data(path):
+        if not os.path.exists(path): return None
         try:
-            temp_df = pd.read_csv(path, encoding='utf-8-sig')
-            # 清洗列名：去空格、去BOM、转统一名称
-            temp_df.columns = temp_df.columns.str.strip().str.replace('\ufeff', '')
-            mapping = {'记录时间': '时间', '实时累计换电次数': '次数'}
-            temp_df.rename(columns=mapping, inplace=True)
-            return temp_df[['时间', '次数']] if '时间' in temp_df.columns and '次数' in temp_df.columns else None
-        except Exception as e:
-            print(f"Error loading {path}: {e}")
-            return None
+            temp = pd.read_csv(path, encoding='utf-8-sig')
+            temp.columns = temp.columns.str.strip().str.replace('\ufeff', '')
+            mapping = {
+                '记录时间': '时间', '实时累计换电次数': '次数',
+                '换电站': '站数', '总站数': '站数'
+            }
+            temp.rename(columns=mapping, inplace=True)
+            # 确保关键列存在
+            for col in ['时间', '次数']:
+                if col not in temp.columns: return None
+            return temp
+        except: return None
 
-    # 加载文件
-    df_now = load_and_clean(current_file)
-    df_hist = load_and_clean(history_file)
+    df_now_raw = load_data(current_file)
+    df_hist_raw = load_data(history_file)
 
-    if df_now is not None: data_frames.append(df_now)
-    if df_hist is not None: data_frames.append(df_hist)
+    if df_now_raw is None and df_hist_raw is None: return
 
-    if not data_frames:
-        print("No valid data found."); return
+    # --- 数据清洗逻辑 ---
+    def clean_df(df_target):
+        df_target['次数'] = pd.to_numeric(df_target['次数'].astype(str).str.replace(',', ''), errors='coerce')
+        if '站数' in df_target.columns:
+            df_target['站数'] = pd.to_numeric(df_target['站数'].astype(str).str.replace(',', ''), errors='coerce')
+        else:
+            df_target['站数'] = np.nan
+        df_target['时间'] = pd.to_datetime(df_target['时间'], errors='coerce')
+        return df_target.dropna(subset=['时间', '次数']).sort_values('时间')
 
-    # 合并
-    df = pd.concat(data_frames, ignore_index=True)
+    # 处理两组数据
+    df_now = clean_df(df_now_raw) if df_now_raw is not None else pd.DataFrame()
+    df_hist = clean_df(df_hist_raw) if df_hist_raw is not None else pd.DataFrame()
 
-    # --- 2. 向量化数据清洗 (解决 ValueError 的核心) ---
-    # 先把“次数”转为字符串，统一处理逗号，再转数字
-    df['次数'] = df['次数'].astype(str).str.replace(',', '').str.replace('"', '').str.strip()
-    df['次数'] = pd.to_numeric(df['次数'], errors='coerce')
-    
-    # 时间转换
-    df['时间'] = pd.to_datetime(df['时间'], errors='coerce')
-    
-    # 清理无效记录
-    df = df.dropna(subset=['次数', '时间']).drop_duplicates(subset=['时间']).sort_values('时间')
+    # 合并用于预测
+    df_all = pd.concat([df_hist, df_now], ignore_index=True).drop_duplicates(subset=['时间']).sort_values('时间')
 
-    if df.empty:
-        print("Dataframe is empty after cleaning."); return
-
-    # --- 3. 预测逻辑 ---
-    latest_record = df.iloc[-1]
-    latest_count = int(latest_record['次数'])
-    # 自动计算下一个千万里程碑
+    # --- 预测逻辑 (保持秒级) ---
+    latest = df_all.iloc[-1]
+    latest_count = int(latest['次数'])
     next_milestone = ((latest_count // 10000000) + 1) * 10000000
-
-    # 72小时采样逻辑
-    target_time = latest_record['时间'] - timedelta(days=3)
-    df_recent = df[df['时间'] <= target_time]
     
-    # 如果没有3天前的数据，则取最早的一条
-    start_point = df_recent.iloc[-1] if not df_recent.empty else df.iloc[0]
-
-    duration_sec = (latest_record['时间'] - start_point['时间']).total_seconds()
-    count_gain = latest_count - start_point['次数']
+    # 采样近72h速率
+    recent_target = latest['时间'] - timedelta(days=3)
+    df_recent = df_all[df_all['时间'] <= recent_target]
+    start_pt = df_recent.iloc[-1] if not df_recent.empty else df_all.iloc[0]
     
-    # 计算速率
-    if duration_sec > 60: # 至少间隔一分钟
-        rate_per_sec = count_gain / duration_sec
-        rem_swaps = next_milestone - latest_count
-        sec_to_go = rem_swaps / rate_per_sec
-        finish_dt = latest_record['时间'] + timedelta(seconds=sec_to_go)
+    duration = (latest['时间'] - start_pt['时间']).total_seconds()
+    if duration > 60:
+        rate = (latest['次数'] - start_pt['次数']) / duration
+        sec_to_go = (next_milestone - latest['次数']) / rate
+        finish_dt = latest['时间'] + timedelta(seconds=sec_to_go)
         pred_time_str = finish_dt.strftime('%Y-%m-%d %H:%M:%S')
-        days_str = f"{sec_to_go / 86400:.2f}"
+        days_left = f"{sec_to_go/86400:.2f}"
     else:
-        pred_time_str = "计算中..."
-        days_str = "--"
+        pred_time_str = "计算中..."; days_left = "--"
 
-    # --- 4. 可视化 ---
-    theme_color = "#00A3E0"
-    fig = px.line(df, x='时间', y='次数', template='plotly_dark')
-    fig.update_traces(line=dict(color=theme_color, width=3), fill='tozeroy', fillcolor='rgba(0,163,224,0.1)')
-    fig.update_xaxes(rangeslider_visible=True, gridcolor='#333')
-    fig.update_yaxes(autorange=True, tickformat=",d", gridcolor='#333')
+    # --- 可视化：双 Y 轴 + 虚实结合 ---
+    # 创建带双 Y 轴的图表
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    theme_color = "#00A3E0"   # 蔚来蓝
+    station_color = "#2ecc71" # 站数绿
+
+    # 1. 历史数据 - 虚线 (Dash)
+    if not df_hist.empty:
+        fig.add_trace(go.Scatter(
+            x=df_hist['时间'], y=df_hist['次数'],
+            name="历史里程碑", line=dict(color=theme_color, width=2, dash='dash'),
+            hovertemplate="时间: %{x}<br>次数: %{y:,}"
+        ), secondary_y=False)
+
+    # 2. 实时数据 - 实线 (Solid)
+    if not df_now.empty:
+        fig.add_trace(go.Scatter(
+            x=df_now['时间'], y=df_now['次数'],
+            name="实时监测", line=dict(color=theme_color, width=4),
+            fill='tozeroy', fillcolor='rgba(0,163,224,0.1)',
+            hovertemplate="时间: %{x}<br>次数: %{y:,}"
+        ), secondary_y=False)
+
+    # 3. 换电站数量 - 阶梯线 (如果有数据)
+    # 合并所有有站数的数据点
+    df_stations = df_all.dropna(subset=['站数'])
+    if not df_stations.empty:
+        fig.add_trace(go.Scatter(
+            x=df_stations['时间'], y=df_stations['站数'],
+            name="换电站总数", line=dict(color=station_color, width=2, shape='hv'),
+            hovertemplate="时间: %{x}<br>站数: %{y}"
+        ), secondary_y=True)
+
+    # 布局美化
     fig.update_layout(
-        title="NIO 换电全景监控与预测 (2018-2026)",
-        hovermode="x unified",
+        title="NIO 换电史诗全景看板 (虚线为历史记录，实线为实时监测)",
+        template='plotly_dark',
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=10,r=10,t=50,b=10)
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=10,r=10,t=80,b=10)
     )
+    
+    fig.update_xaxes(rangeslider_visible=True, gridcolor='#333')
+    fig.update_yaxes(title_text="换电总次数", secondary_y=False, tickformat=",d", gridcolor='#333')
+    fig.update_yaxes(title_text="换电站数量", secondary_y=True, showgrid=False)
 
-    # --- 5. HTML 生成 ---
+    # --- HTML 生成 ---
     html_content = f"""
     <!DOCTYPE html>
-    <html lang="zh-CN">
+    <html>
     <head>
         <meta charset="UTF-8">
         <style>
-            body {{ background: #0b0e14; color: white; font-family: -apple-system, sans-serif; padding: 15px; }}
-            .card {{ background: #1a1f28; padding: 25px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 900px; margin: auto; }}
+            body {{ background: #0b0e14; color: white; font-family: sans-serif; padding: 15px; }}
+            .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 1000px; margin: auto; }}
             .predict-box {{ background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); padding: 25px; border-radius: 12px; margin: 20px 0; text-align: center; border: 1px solid #3e4b5b; }}
             .highlight {{ color: #f1c40f; font-size: 28px; font-weight: bold; font-family: monospace; }}
-            .label {{ color: #888; font-size: 13px; margin-bottom: 5px; }}
+            .station-val {{ color: {station_color}; font-weight: bold; }}
         </style>
     </head>
     <body>
         <div class="card">
-            <h2 style="margin:0;">NIO 换电全景大屏</h2>
-            <div style="margin: 15px 0;">
-                <span class="label">当前实时累计总数</span><br>
-                <span style="font-size: 32px; font-weight: bold;">{latest_count:,}</span>
+            <h2 style="margin:0;">NIO Power 实时监测大屏</h2>
+            <div style="margin: 15px 0; display: flex; justify-content: space-between; align-items: flex-end;">
+                <div>
+                    <div style="color:#888; font-size:13px;">实时累计换电总数</div>
+                    <div style="font-size: 36px; font-weight: bold;">{latest_count:,}</div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="color:#888; font-size:13px;">当前换电站总数</div>
+                    <div class="station-val" style="font-size: 24px;">{int(latest['站数']) if not pd.isna(latest['站数']) else '同步中...'}</div>
+                </div>
             </div>
             
             <div class="predict-box">
-                <div class="label" style="color:#bdc3c7;">🏁 目标里程碑：{next_milestone:,}</div>
-                <div style="margin: 10px 0;">预计达成精确时间</div>
+                <div style="color:#bdc3c7; font-size:13px;">🏁 下一个一千万里程碑：{next_milestone:,}</div>
+                <div style="margin: 10px 0; font-size: 16px;">预计达成时刻</div>
                 <div class="highlight">{pred_time_str}</div>
                 <div style="margin-top: 10px; font-size: 14px; color:#bdc3c7;">
-                    距离达成约剩 <b style="color:white;">{days_str}</b> 天
+                    倒计时约 <b style="color:white;">{days_left}</b> 天
                 </div>
             </div>
 
             <div style="background:#000; padding:10px; border-radius:10px;">
                 {fig.to_html(full_html=False, include_plotlyjs='cdn')}
-            </div>
-            
-            <div style="text-align:center; color:#444; font-size:11px; margin-top:15px;">
-                已成功整合历史数据 | 最后更新：{latest_record['时间']}
             </div>
         </div>
     </body>
@@ -138,7 +163,6 @@ def run_analysis():
     """
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
-    print("Success: Analysis completed.")
 
 if __name__ == "__main__":
     run_analysis()
