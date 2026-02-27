@@ -19,7 +19,8 @@ def run_analysis():
             temp.columns = temp.columns.str.strip().str.replace('\ufeff', '')
             mapping = {
                 '记录时间': '时间', '实时累计换电次数': '次数',
-                '换电站': '站数', '总站数': '站数'
+                '换电站': '站数', '总站数': '站数',
+                '高速换电站': '高速站'  # 新增：映射高速换电站字段
             }
             temp.rename(columns=mapping, inplace=True)
             for col in ['时间', '次数']:
@@ -34,11 +35,21 @@ def run_analysis():
 
     def clean_df(df_target):
         df_target['次数'] = pd.to_numeric(df_target['次数'].astype(str).str.replace(',', ''), errors='coerce')
+        
+        # 处理总站数
         col_name = '站数' if '站数' in df_target.columns else None
         if col_name:
             df_target['站数'] = pd.to_numeric(df_target[col_name].astype(str).str.replace(',', ''), errors='coerce')
         else:
             df_target['站数'] = np.nan
+            
+        # 新增：处理高速站数
+        h_col_name = '高速站' if '高速站' in df_target.columns else None
+        if h_col_name:
+            df_target['高速站'] = pd.to_numeric(df_target[h_col_name].astype(str).str.replace(',', ''), errors='coerce')
+        else:
+            df_target['高速站'] = np.nan
+
         df_target['时间'] = pd.to_datetime(df_target['时间'], errors='coerce')
         return df_target.dropna(subset=['时间', '次数']).sort_values('时间')
 
@@ -83,7 +94,6 @@ def run_analysis():
             if model.predict(poly.transform([[d]]))[0] >= next_milestone:
                 trend_dt = m_start + timedelta(days=float(d))
                 trend_pred_str = trend_dt.strftime('%Y-%m-%d %H:%M:%S')
-                # 计算趋势模型的剩余天数
                 sec_to_go_trend = (trend_dt - latest['时间']).total_seconds()
                 days_left_trend = f"{max(0, sec_to_go_trend/86400):.2f}"
                 break
@@ -91,7 +101,7 @@ def run_analysis():
     # --- 可视化配置 ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     theme_color = "#00A3E0"   
-    station_color = "#2ecc71" 
+    station_color = "#FF8C00" 
 
     if not df_hist.empty:
         fig.add_trace(go.Scatter(
@@ -130,6 +140,9 @@ def run_analysis():
     fig.update_yaxes(title_text="换电总次数", secondary_y=False, tickformat=",d", gridcolor='#333', rangemode='normal')
     fig.update_yaxes(title_text="换电站数量", secondary_y=True, showgrid=False)
 
+    # 获取最新的高速站数据
+    latest_highway_stations = int(latest['高速站']) if '高速站' in latest and not pd.isna(latest['高速站']) else '--'
+
     # --- HTML 渲染 ---
     html_content = f"""
     <!DOCTYPE html>
@@ -138,7 +151,7 @@ def run_analysis():
         <meta charset="UTF-8">
         <title>NIO Power Insight</title>
         <style>
-            body {{ background: #0b0e14; color: white; font-family: -apple-system, sans-serif; padding: 15px; }}
+            body {{ background: #0b0e14; color: white; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 15px; }}
             .card {{ background: #1a1f28; padding: 20px; border-radius: 15px; border-top: 5px solid {theme_color}; max-width: 1000px; margin: auto; }}
             .predict-box {{ 
                 background: linear-gradient(135deg, #1e2530 0%, #2c3e50 100%); 
@@ -160,7 +173,14 @@ def run_analysis():
                 display: inline-block; margin-top: 10px; background: rgba(255,255,255,0.1); 
                 padding: 4px 12px; border-radius: 20px; font-size: 12px; color: #ddd; 
             }}
-            .station-val {{ color: {station_color}; font-weight: bold; }}
+            
+            /* 统一右上角数据样式 */
+            .stat-label {{ color:#888; font-size:12px; margin-bottom: 2px; }}
+            .stat-value-group {{ margin-bottom: 10px; }}
+            .stat-value-main {{ font-size: 24px; font-weight: 700; font-family: 'Segoe UI', Roboto, sans-serif; }}
+            .color-station {{ color: {station_color}; }}
+            .color-highway {{ color: #eee; }}
+
             button {{
                 margin: 0 2px; padding: 4px 10px; background: #1e2530; color: #eee; 
                 border: 1px solid #3e4b5b; border-radius: 4px; cursor: pointer; transition: 0.2s;
@@ -172,14 +192,20 @@ def run_analysis():
         <div class="card">
             <h2 style="margin:0; font-weight: 300; letter-spacing: 1px;">NIO Power <span style="font-weight:700;">INSIGHT</span></h2>
             
-            <div style="margin: 20px 0; display: flex; justify-content: space-between; align-items: flex-end;">
+            <div style="margin: 20px 0; display: flex; justify-content: space-between; align-items: flex-start;">
                 <div>
-                    <div style="color:#888; font-size:12px;">实时累计换电总数</div>
-                    <div style="font-size: 38px; font-weight: 800; color: {theme_color};">{latest_count:,}</div>
+                    <div class="stat-label">实时累计换电总数</div>
+                    <div style="font-size: 38px; font-weight: 800; color: {theme_color}; line-height: 1;">{latest_count:,}</div>
                 </div>
                 <div style="text-align: right;">
-                    <div style="color:#888; font-size:12px;">换电站总数</div>
-                    <div class="station-val" style="font-size: 26px;">{int(latest['站数']) if not pd.isna(latest['站数']) else '--'}</div>
+                    <div class="stat-value-group">
+                        <div class="stat-label">换电站总数</div>
+                        <div class="stat-value-main color-station">{int(latest['站数']) if not pd.isna(latest['站数']) else '--'}</div>
+                    </div>
+                    <div class="stat-value-group">
+                        <div class="stat-label">高速换电站</div>
+                        <div class="stat-value-main color-highway">{latest_highway_stations}</div>
+                    </div>
                 </div>
             </div>
             
