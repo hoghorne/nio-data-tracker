@@ -5,6 +5,8 @@ from plotly.subplots import make_subplots
 import os
 from datetime import datetime, timedelta
 import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
 
 def run_analysis():
     current_file = 'nio_swaps.csv'
@@ -44,14 +46,15 @@ def run_analysis():
     df_hist = clean_df(df_hist_raw) if df_hist_raw is not None else pd.DataFrame()
     df_all = pd.concat([df_hist, df_now], ignore_index=True).drop_duplicates(subset=['时间']).sort_values('时间')
 
-    # --- 预测逻辑 ---
+    # --- 核心预测逻辑增强 ---
     latest = df_all.iloc[-1]
     latest_count = int(latest['次数'])
     next_milestone = ((latest_count // 10000000) + 1) * 10000000
     prev_milestone = ((latest_count - 1) // 10000000) * 10000000 if latest_count > 0 else 0
     
+    # 模型 A: 近期线性模型
     recent_target = latest['时间'] - timedelta(days=3)
-    df_recent = df_all[df_all['时间'] >= recent_target] # 修正为大于等于最近3天
+    df_recent = df_all[df_all['时间'] >= recent_target]
     start_pt = df_recent.iloc[0] if not df_recent.empty else df_all.iloc[0]
     duration = (latest['时间'] - start_pt['时间']).total_seconds()
 
@@ -60,14 +63,35 @@ def run_analysis():
         sec_to_go = (next_milestone - latest['次数']) / rate
         finish_dt = latest['时间'] + timedelta(seconds=sec_to_go)
         pred_time_str = finish_dt.strftime('%Y-%m-%d %H:%M:%S')
-        days_left = f"{sec_to_go/86400:.2f}"
+        days_left_linear = f"{sec_to_go/86400:.2f}"
     else:
-        pred_time_str = "计算中..."; days_left = "--"
+        pred_time_str = "计算中..."; days_left_linear = "--"
+
+    # 模型 B: 历史趋势多项式回归
+    trend_pred_str = "计算中..."
+    days_left_trend = "--"
+    df_m = df_hist[df_hist['次数'] >= 10000000].copy()
+    if len(df_m) >= 3:
+        m_start = df_m['时间'].min()
+        df_m['days'] = (df_m['时间'] - m_start).dt.total_seconds() / 86400
+        X = df_m[['days']].values
+        y = df_m['次数'].values
+        poly = PolynomialFeatures(degree=2)
+        model = LinearRegression().fit(poly.fit_transform(X), y)
+        
+        for d in np.arange(df_m['days'].max(), df_m['days'].max() + 365, 0.01):
+            if model.predict(poly.transform([[d]]))[0] >= next_milestone:
+                trend_dt = m_start + timedelta(days=float(d))
+                trend_pred_str = trend_dt.strftime('%Y-%m-%d %H:%M:%S')
+                # 计算趋势模型的剩余天数
+                sec_to_go_trend = (trend_dt - latest['时间']).total_seconds()
+                days_left_trend = f"{max(0, sec_to_go_trend/86400):.2f}"
+                break
 
     # --- 可视化配置 ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    theme_color = "#00A3E0"   # NIO Blue
-    station_color = "#2ecc71" # Station Green
+    theme_color = "#00A3E0"   
+    station_color = "#2ecc71" 
 
     if not df_hist.empty:
         fig.add_trace(go.Scatter(
@@ -122,12 +146,19 @@ def run_analysis():
                 border: 1px solid #3e4b5b; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             }}
             .milestone-label {{ color: #bdc3c7; font-size: 14px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }}
-            .milestone-value {{ font-size: 32px; font-weight: 800; color: #ffffff; text-shadow: 0 0 15px rgba(255,255,255,0.3); margin-bottom: 20px; }}
-            .predict-label {{ color: #888; font-size: 13px; margin-bottom: 5px; }}
-            .highlight {{ color: #f1c40f; font-size: 30px; font-weight: bold; font-family: 'Courier New', monospace; }}
+            .milestone-value {{ font-size: 32px; font-weight: 800; color: #ffffff; text-shadow: 0 0 15px rgba(255,255,255,0.3); margin-bottom: 25px; }}
+            
+            .predict-grid {{ 
+                display: flex; justify-content: space-between; gap: 20px;
+                border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; 
+            }}
+            .predict-item {{ flex: 1; text-align: center; }}
+            .predict-label {{ color: #888; font-size: 13px; margin-bottom: 8px; }}
+            .highlight {{ color: #f1c40f; font-size: 20px; font-weight: bold; font-family: 'Courier New', monospace; }}
+            
             .days-badge {{ 
-                display: inline-block; margin-top: 15px; background: rgba(255,255,255,0.1); 
-                padding: 5px 15px; border-radius: 20px; font-size: 14px; color: #ddd; 
+                display: inline-block; margin-top: 10px; background: rgba(255,255,255,0.1); 
+                padding: 4px 12px; border-radius: 20px; font-size: 12px; color: #ddd; 
             }}
             .station-val {{ color: {station_color}; font-weight: bold; }}
             button {{
@@ -155,10 +186,19 @@ def run_analysis():
             <div class="predict-box">
                 <div class="milestone-label">🏁 下一个里程碑目标</div>
                 <div class="milestone-value">{next_milestone:,} <span style="font-size:16px; font-weight:300;">次</span></div>
-                <div style="width: 50px; height: 2px; background: {theme_color}; margin: 0 auto 20px auto; opacity: 0.5;"></div>
-                <div class="predict-label">预计达成精确时刻</div>
-                <div class="highlight">{pred_time_str}</div>
-                <div class="days-badge">距离达成约剩 <b style="color:#fff;">{days_left}</b> 天</div>
+                
+                <div class="predict-grid">
+                    <div class="predict-item" style="border-right: 1px solid rgba(255,255,255,0.1);">
+                        <div class="predict-label">近期线性预测 (精准时刻)</div>
+                        <div class="highlight">{pred_time_str}</div>
+                        <div class="days-badge">距离达成约剩 <b style="color:#fff;">{days_left_linear}</b> 天</div>
+                    </div>
+                    <div class="predict-item">
+                        <div class="predict-label">历史趋势预测 (加速模型)</div>
+                        <div class="highlight" style="color: #2ecc71;">{trend_pred_str}</div>
+                        <div class="days-badge">距离达成约剩 <b style="color:#fff;">{days_left_trend}</b> 天</div>
+                    </div>
+                </div>
             </div>
 
             <div style="margin:10px 0 10px 0; text-align:right; font-size:12px;">
@@ -176,7 +216,6 @@ def run_analysis():
         </div>
 
         <script>
-        // 常量注入
         const NIO_PREV_MILESTONE = {prev_milestone};
         const NIO_LATEST_COUNT = {latest_count};
 
@@ -188,7 +227,6 @@ def run_analysis():
             const plotDiv = getPlotlyDiv();
             if (!plotDiv || typeof Plotly === 'undefined') return;
 
-            // 获取数据中的最新时间点
             let latestTime = 0;
             plotDiv.data.forEach(trace => {{
                 if (trace.x && trace.x.length > 0) {{
@@ -206,7 +244,6 @@ def run_analysis():
                 'xaxis.range': [new Date(startTime).toISOString(), new Date(endTime).toISOString()]
             }};
 
-            // 如果是短时间区间，锁定Y轴到当前里程碑段
             if (value <= 30 && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
                 update['yaxis.range'] = [NIO_PREV_MILESTONE, NIO_LATEST_COUNT * 1.005];
                 update['yaxis.autorange'] = false;
