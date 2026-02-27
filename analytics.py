@@ -62,6 +62,7 @@ def run_analysis():
     latest_count = int(latest['次数'])
     next_milestone = ((latest_count // 10000000) + 1) * 10000000
     prev_milestone = ((latest_count - 1) // 10000000) * 10000000 if latest_count > 0 else 0
+    prev_prev_milestone = prev_milestone - 10000000 if prev_milestone > 0 else 0
     
     # 模型 A: 近期线性模型
     recent_target = latest['时间'] - timedelta(days=3)
@@ -101,21 +102,70 @@ def run_analysis():
     # --- 可视化配置 ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     theme_color = "#00A3E0"   
-    station_color = "#FF8C00" 
+    station_color = "#FF8C00"
+
+    # 处理实时监测数据 - 按间隔分割为多个trace
+    if not df_now.empty:
+        dates = df_now['时间'].tolist()
+        counts = df_now['次数'].tolist()
+        
+        # 分割数据点
+        segments = []
+        current_segment = {'x': [], 'y': []}
+        
+        for i, (date, count) in enumerate(zip(dates, counts)):
+            if i == 0:
+                current_segment['x'].append(date)
+                current_segment['y'].append(count)
+            else:
+                gap_days = (date - dates[i-1]).total_seconds() / 86400
+                if gap_days > 7:
+                    # 保存当前段
+                    if len(current_segment['x']) > 0:
+                        segments.append(current_segment.copy())
+                    # 开始新段
+                    current_segment = {'x': [date], 'y': [count]}
+                else:
+                    current_segment['x'].append(date)
+                    current_segment['y'].append(count)
+        
+        # 保存最后一段
+        if len(current_segment['x']) > 0:
+            segments.append(current_segment)
+        
+        # 为每个段创建trace
+        for idx, seg in enumerate(segments):
+            if idx == 0:
+                name = "实时监测数据"
+                showlegend = True
+            else:
+                name = None
+                showlegend = False
+            
+            fig.add_trace(go.Scatter(
+                x=seg['x'], y=seg['y'],
+                name=name, showlegend=showlegend,
+                line=dict(color=theme_color, width=4),
+                hovertemplate="<b>实时监测</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
+            ), secondary_y=False)
+        
+        # 创建虚线段用于显示间隔
+        for i in range(1, len(dates)):
+            gap_days = (dates[i] - dates[i-1]).total_seconds() / 86400
+            if gap_days > 7:
+                fig.add_trace(go.Scatter(
+                    x=[dates[i-1], dates[i]],
+                    y=[counts[i-1], counts[i]],
+                    name=None, showlegend=False,
+                    line=dict(color=theme_color, width=4, dash='dash'),
+                    hovertemplate="<b>数据间隔</b><br>间隔: {gap_days:.1f}天<extra></extra>".format(gap_days=gap_days)
+                ), secondary_y=False)
 
     if not df_hist.empty:
         fig.add_trace(go.Scatter(
             x=df_hist['时间'], y=df_hist['次数'],
             name="历史里程碑", line=dict(color=theme_color, width=2, dash='dash'),
             hovertemplate="<b>历史里程碑</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
-        ), secondary_y=False)
-
-    if not df_now.empty:
-        fig.add_trace(go.Scatter(
-            x=df_now['时间'], y=df_now['次数'],
-            name="实时监测数据",
-            line=dict(color=theme_color, width=4),
-            hovertemplate="<b>实时监测</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
         ), secondary_y=False)
 
     df_stations = df_all.dropna(subset=['站数'])
@@ -182,10 +232,16 @@ def run_analysis():
             .color-highway {{ color: #eee; }}
 
             button {{
-                margin: 0 2px; padding: 4px 10px; background: #1e2530; color: #eee; 
+                margin: 0 2px; padding: 4px 10px; background: #1e2530; color: #eee;
                 border: 1px solid #3e4b5b; border-radius: 4px; cursor: pointer; transition: 0.2s;
             }}
             button:hover {{ background: #3e4b5b; }}
+            button.active {{
+                background: {theme_color};
+                border-color: {theme_color};
+                color: #fff;
+                box-shadow: 0 0 10px rgba(0, 163, 224, 0.5);
+            }}
         </style>
     </head>
     <body>
@@ -229,11 +285,11 @@ def run_analysis():
 
             <div style="margin:10px 0 10px 0; text-align:right; font-size:12px;">
                 <span style="margin-right:8px; color:#888;">缩放区间:</span>
-                <button onclick="nioSetRange(24, 'hours')">24小时</button>
-                <button onclick="nioSetRange(7, 'days')">7天</button>
-                <button onclick="nioSetRange(30, 'days')">30天</button>
-                <button onclick="nioSetRange(90, 'days')">90天</button>
-                <button onclick="nioShowAll()">全部</button>
+                <button onclick="nioSetRange(24, 'hours')" id="btn-24h">24小时</button>
+                <button onclick="nioSetRange(7, 'days')" id="btn-7d">7天</button>
+                <button onclick="nioSetRange(30, 'days')" id="btn-30d">30天</button>
+                <button onclick="nioSetRange(90, 'days')" id="btn-90d">90天</button>
+                <button onclick="nioShowAll()" id="btn-all">全部</button>
             </div>
             
             <div style="background:#000; padding:10px; border-radius:10px; border: 1px solid #222;">
@@ -243,10 +299,17 @@ def run_analysis():
 
         <script>
         const NIO_PREV_MILESTONE = {prev_milestone};
+        const NIO_PREV_PREV_MILESTONE = {prev_prev_milestone};
         const NIO_LATEST_COUNT = {latest_count};
 
         function getPlotlyDiv() {{
             return document.querySelector('.plotly-graph-div');
+        }}
+
+        function setActiveButton(btnId) {{
+            document.querySelectorAll('button[id^="btn-"]').forEach(btn => btn.classList.remove('active'));
+            const btn = document.getElementById(btnId);
+            if (btn) btn.classList.add('active');
         }}
 
         window.nioSetRange = function(value, unit) {{
@@ -270,15 +333,25 @@ def run_analysis():
                 'xaxis.range': [new Date(startTime).toISOString(), new Date(endTime).toISOString()]
             }};
 
-            if (value <= 30 && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
+            if ((value === 7 || value === 24 && unit === 'hours') && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
                 update['yaxis.range'] = [NIO_PREV_MILESTONE, NIO_LATEST_COUNT * 1.005];
+                update['yaxis.autorange'] = false;
+            }} else if ((value === 30 || value === 90) && NIO_LATEST_COUNT > NIO_PREV_MILESTONE) {{
+                update['yaxis.range'] = [NIO_PREV_PREV_MILESTONE, NIO_LATEST_COUNT * 1.005];
                 update['yaxis.autorange'] = false;
             }} else {{
                 update['yaxis.autorange'] = true;
             }}
-            
+
             update['yaxis2.autorange'] = true;
             Plotly.relayout(plotDiv, update);
+
+            // 更新按钮状态
+            if (unit === 'hours') {{
+                setActiveButton('btn-24h');
+            }} else {{
+                setActiveButton('btn-' + value + 'd');
+            }}
         }};
 
         window.nioShowAll = function() {{
@@ -289,6 +362,7 @@ def run_analysis():
                     'yaxis.autorange': true,
                     'yaxis2.autorange': true
                 }});
+                setActiveButton('btn-all');
             }}
         }};
         </script>
