@@ -10,7 +10,6 @@ from sklearn.preprocessing import PolynomialFeatures
 
 def run_analysis():
     current_file = 'nio_swaps.csv'
-    history_file = 'nio_swaps_history.csv'
     
     def load_data(path):
         if not os.path.exists(path): return None
@@ -29,9 +28,8 @@ def run_analysis():
         except: return None
 
     df_now_raw = load_data(current_file)
-    df_hist_raw = load_data(history_file)
 
-    if df_now_raw is None and df_hist_raw is None: return
+    if df_now_raw is None: return
 
     def clean_df(df_target):
         df_target['次数'] = pd.to_numeric(df_target['次数'].astype(str).str.replace(',', ''), errors='coerce')
@@ -54,8 +52,7 @@ def run_analysis():
         return df_target.dropna(subset=['时间', '次数']).sort_values('时间')
 
     df_now = clean_df(df_now_raw) if df_now_raw is not None else pd.DataFrame()
-    df_hist = clean_df(df_hist_raw) if df_hist_raw is not None else pd.DataFrame()
-    df_all = pd.concat([df_hist, df_now], ignore_index=True).drop_duplicates(subset=['时间']).sort_values('时间')
+    df_all = df_now
 
     # --- 核心预测逻辑增强 ---
     latest = df_all.iloc[-1]
@@ -79,10 +76,10 @@ def run_analysis():
     else:
         pred_time_str = "计算中..."; days_left_linear = "--"
 
-    # 模型 B: 历史趋势多项式回归
+    # 模型 B: 历史趋势多项式回归（简化为使用 df_all）
     trend_pred_str = "计算中..."
     days_left_trend = "--"
-    df_m = df_hist[df_hist['次数'] >= 10000000].copy()
+    df_m = df_all[df_all['次数'] >= 10000000].copy()
     if len(df_m) >= 3:
         m_start = df_m['时间'].min()
         df_m['days'] = (df_m['时间'] - m_start).dt.total_seconds() / 86400
@@ -101,6 +98,8 @@ def run_analysis():
 
     # --- 可视化配置 ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # 移除 df_hist 相关的可视化代码（已整合到 df_now）
     theme_color = "#00A3E0"   
     station_color = "#FF8C00"
 
@@ -161,13 +160,7 @@ def run_analysis():
                     hovertemplate="<b>数据间隔</b><br>间隔: {gap_days:.1f}天<extra></extra>".format(gap_days=gap_days)
                 ), secondary_y=False)
 
-    if not df_hist.empty:
-        fig.add_trace(go.Scatter(
-            x=df_hist['时间'], y=df_hist['次数'],
-            name="历史里程碑", line=dict(color=theme_color, width=2, dash='dash'),
-            hovertemplate="<b>历史里程碑</b><br>时间: %{x}<br>次数: %{y:,}<extra></extra>"
-        ), secondary_y=False)
-
+    # 历史数据已整合到 df_now 中，df_stations 从 df_all 中提取
     df_stations = df_all.dropna(subset=['站数'])
     if not df_stations.empty:
         fig.add_trace(go.Scatter(
